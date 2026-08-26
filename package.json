@@ -49,11 +49,15 @@
   "engines": {
     "node": ">=24"
   },
+  "dependencyNotes": {
+    "typescript": "Pinned exactly because tessera consumes TypeScript's unstable native API; advance only with a tested lockfile update.",
+    "@typescript/typescript6": "Do not add: it exposes the legacy compiler API, while tessera imports the native TypeScript 7 unstable API."
+  },
   "peerDependencies": {
-    "typescript": ">=7.0.2 <8"
+    "typescript": "7.0.2"
   },
   "devDependencies": {
     "@types/node": "^26.3.0",
-    "typescript": "^7.0.2"
+    "typescript": "7.0.2"
   }
 }

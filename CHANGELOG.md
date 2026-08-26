@@ -5,6 +5,7 @@
 - Correct the documented request-analysis boundary for path and response data.
 - Scope allow entries to query or body fields.
 - Deduplicate findings in linear time and retain all endpoint source sites.
+- Pin and document the native TypeScript 7 API posture and sibling-runner mode.
 
 ## 0.1.0 — 2026-08-26
 

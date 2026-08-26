@@ -20,14 +20,19 @@ replacement for end-to-end tests.
 ## Requirements and installation
 
 - Node.js 24 or newer (CI also tests the current Node.js 26 release)
-- TypeScript 7.0.2 or newer in the 7.x line
+- TypeScript 7.0.2 exactly
 - A TypeScript project and, for v0.1.0, a Go server using Gin-style routes
 
 The package is named `@identuum/tessera`; TypeScript is an explicit peer
 dependency because its compiler API powers the analysis.
 
+### In-repository mode (the quickstart)
+
+This mode assumes the target repository already uses TypeScript 7.0.2. Install
+and initialize Tessera at that repository's root:
+
 ```sh
-npm install --save-dev @identuum/tessera typescript
+npm install --save-dev @identuum/tessera typescript@7.0.2
 npx tessera init
 ```
 
@@ -35,12 +40,10 @@ Until a registry package is available, the tagged GitHub release can be
 installed directly:
 
 ```sh
-npm install --save-dev github:ozgurcd/tessera#v0.1.0 typescript
+npm install --save-dev github:ozgurcd/tessera#v0.1.0 typescript@7.0.2
 ```
 
-## Start in an existing repository
-
-Run `tessera init` at the repository root. It detects `tsconfig.json`,
+`tessera init` detects `tsconfig.json`,
 `tsconfig.app.json`, or `tsconfig.build.json` and writes a starter
 `tessera.config.json`. It will not overwrite an existing file.
 
@@ -50,7 +53,33 @@ npx tessera check
 ```
 
 Edit the generated server root and client include patterns before the first
-check. A complete configuration looks like this:
+check.
+
+### Sibling-directory mode
+
+Use a sibling runner when the target repository is still on TypeScript 5 or 6,
+or any compiler version other than 7.0.2. This keeps Tessera's TypeScript 7
+peer isolated and does not change the target repository's dependencies.
+
+Given sibling directories named `identuum-ui`, `backend`, and
+`tessera-runner`:
+
+```sh
+mkdir ../tessera-runner
+cd ../tessera-runner
+npm init --yes
+npm install --save-dev github:ozgurcd/tessera#v0.1.0 typescript@7.0.2
+npx tessera init
+```
+
+Then set `client.tsconfig` to `../identuum-ui/tsconfig.json`, client includes
+to paths such as `../identuum-ui/src/**/*.ts`, and `server.root` to
+`../backend`. All configuration paths are resolved relative to the Tessera
+configuration file.
+
+## Configuration
+
+A complete configuration looks like this:
 
 ```jsonc
 {
@@ -222,6 +251,12 @@ The project intentionally uses only TypeScript at runtime. As of 26 August
 2026, development is pinned to the current stable TypeScript 7.0.2 and Node
 type definitions 26.3.0. CI and release actions are also pinned to their
 current stable releases.
+
+TypeScript is pinned exactly because Tessera imports APIs that TypeScript marks
+`unstable`; update the peer pin, development pin, and lockfile together only
+after the full suite passes. Do not add `@typescript/typescript6`: it provides
+the legacy `ts.createProgram` compatibility surface, while Tessera uses the new
+native `typescript/unstable/sync` and `typescript/unstable/ast` APIs.
 
 ## License
 
