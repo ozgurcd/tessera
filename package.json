@@ -1,0 +1,59 @@
+{
+  "name": "@identuum/tessera",
+  "version": "0.1.0",
+  "description": "Static analysis that checks TypeScript HTTP clients against server handlers",
+  "type": "module",
+  "bin": {
+    "tessera": "./dist/cli.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "fixtures",
+    "tessera.schema.json",
+    "CHANGELOG.md",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "check": "tsc -p tsconfig.build.json --noEmit",
+    "test": "npm run build && node --test dist/*.test.js",
+    "prepare": "npm run build",
+    "prepack": "npm run build && npm test"
+  },
+  "keywords": [
+    "typescript",
+    "static-analysis",
+    "http",
+    "api",
+    "gin"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ozgurcd/tessera.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ozgurcd/tessera/issues"
+  },
+  "homepage": "https://github.com/ozgurcd/tessera#readme",
+  "packageManager": "npm@12.0.2",
+  "engines": {
+    "node": ">=24"
+  },
+  "peerDependencies": {
+    "typescript": ">=7.0.2 <8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.3.0",
+    "typescript": "^7.0.2"
+  }
+}
