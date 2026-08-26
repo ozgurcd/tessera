@@ -43,7 +43,7 @@ test("route overrides extract otherwise unregistered handlers", async () => {
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
 
-test("duplicate Gin routes retain every possible handler site and intersect reads", async () => {
+test("duplicate Gin routes retain every possible handler site and union reads", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "tessera-duplicate-route-"));
   try {
     fs.writeFileSync(path.join(directory, "routes.go"), `package api
@@ -56,7 +56,7 @@ test("duplicate Gin routes retain every possible handler site and intersect read
     `);
     const reads = await new GoGinAdapter().extract({ adapter: "go-gin", root: "." }, directory);
     assert.equal(reads.length, 1);
-    assert.deepEqual(reads[0]?.query, []);
+    assert.deepEqual(reads[0]?.query, ["first_only", "second_only"]);
     assert.equal(reads[0]?.sites?.length, 2);
     assert.ok(reads[0]?.unresolved.some((reason) => reason.includes("duplicate route registration")));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }

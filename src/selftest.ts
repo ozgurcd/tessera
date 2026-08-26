@@ -8,7 +8,9 @@ import { humanResult } from "./report.js";
 
 export type SelftestResult = { schemaVersion: 1; passed: number; total: number; lines: string[] };
 
-const CASES = [
+type SelftestCase = { directory: string; exitCode: number; includes: readonly string[]; excludes?: readonly string[] };
+
+const CASES: readonly SelftestCase[] = [
   { directory: "01-pagination", exitCode: 1, includes: ["field 'limit'", "field 'offset'"] },
   { directory: "02-helper", exitCode: 0, includes: ["0 unmatched, 0 unresolved"] },
   { directory: "03-literal-query", exitCode: 1, includes: ["GET /search", "field 'limit'"] },
@@ -19,7 +21,13 @@ const CASES = [
   { directory: "08-unmapped", exitCode: 0, includes: ["UNMAPPED   GET /reports", "skipped, NOT checked"] },
   { directory: "09-endpoint-scope", exitCode: 1, includes: ["GET /first", "field 'limit'"] },
   { directory: "10-method-discrimination", exitCode: 1, includes: ["POST /resource", "query field 'page'"] },
-] as const;
+  { directory: "11-duplicate-route-union", exitCode: 1, includes: ["1 unmatched, 2 unresolved", "body field 'ghost'", "duplicate route registration"], excludes: ["body field 'name'", "body field 'domain'", "body field 'admin_email'"] },
+  { directory: "12-middleware-handler", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'name'", "middleware_only"] },
+  { directory: "13-bind-shapes", exitCode: 3, includes: ["0 unmatched, 2 unresolved", "bind shape 'c.ShouldBind' is not modeled", "bind shape 'c.ShouldBindUri' is not modeled"], excludes: ["query field 'page'", "query field 'sort'"] },
+  { directory: "14-group-shadowing", exitCode: 3, includes: ["0 unmatched, 2 unresolved", "router group variable 'g' is assigned 2 times in one function"], excludes: ["UNMAPPED", "third"] },
+  { directory: "15-nested-struct-tags", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'name'"] },
+  { directory: "16-linear-group-scan", exitCode: 1, includes: ["POST /api/large", "1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'known'"] },
+];
 
 export async function runSelftest(): Promise<SelftestResult> {
   const fixtureRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures");
@@ -34,11 +42,12 @@ export async function runSelftest(): Promise<SelftestResult> {
       const result = match(sends, reads, loaded.config.rules, loaded.config.allow);
       const output = humanResult(result);
       const missing = fixture.includes.filter((text) => !output.includes(text));
-      if (result.exitCode === fixture.exitCode && !missing.length) {
+      const unexpected = fixture.excludes?.filter((text) => output.includes(text)) ?? [];
+      if (result.exitCode === fixture.exitCode && !missing.length && !unexpected.length) {
         passed += 1;
         lines.push(`PASS ${fixture.directory}`);
       } else {
-        lines.push(`FAIL ${fixture.directory}: exit ${result.exitCode} (wanted ${fixture.exitCode})${missing.length ? `; missing ${missing.join(", ")}` : ""}`);
+        lines.push(`FAIL ${fixture.directory}: exit ${result.exitCode} (wanted ${fixture.exitCode})${missing.length ? `; missing ${missing.join(", ")}` : ""}${unexpected.length ? `; unexpectedly included ${unexpected.join(", ")}` : ""}`);
       }
     } catch (error) {
       lines.push(`FAIL ${fixture.directory}: ${error instanceof Error ? error.message : String(error)}`);

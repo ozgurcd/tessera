@@ -130,7 +130,7 @@ tessera init                 write a starter config and detect tsconfig
 tessera check                compare all mapped endpoints (the CI command)
 tessera list                 print both extracted halves
 tessera explain <route>      show sent and read fields side by side
-tessera selftest             run the ten bundled known-good/known-bad fixtures
+tessera selftest             run the sixteen bundled known-good/known-bad fixtures
 ```
 
 All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
@@ -169,10 +169,18 @@ never silently become an empty send set.
 The `go-gin` adapter parses Go tokens in-process and has no runtime dependency
 on a Go toolchain or third-party parser. It discovers Gin route registrations,
 nested group variables, handler functions, anonymous or named bind structs,
-`ShouldBindJSON`, `BindJSON`, and `ShouldBindWith`. JSON tags have options
-removed and `json:"-"` is ignored. Query readers are configuration-first so
-project helpers are visible; a helper taking `*gin.Context` and a string
-literal but missing from `readerShapes` is reported as unresolved.
+`ShouldBindJSON`, `BindJSON`, `ShouldBindWith`, `ShouldBindQuery`, and
+`BindQuery`. Body binds read top-level JSON tags; query binds read top-level
+form tags. Generic `ShouldBind`, URI binding, and unknown bind shapes are
+reported as unresolved instead of becoming silent empty read sets. Query readers are
+configuration-first so project helpers are visible; a helper taking
+`*gin.Context` and a string literal but missing from `readerShapes` is reported
+as unresolved.
+
+For duplicate method/route registrations, the adapter unions the fields read
+by all possible handlers and emits an unresolved note. This favors usable
+output for mutually exclusive setup branches while preserving the warning that
+branch-specific parity cannot be proven.
 
 This choice keeps the npm package portable. The adapter is isolated behind the
 exported `ServerAdapter` interface so another server implementation does not
@@ -192,7 +200,9 @@ A green first run on an application is not enough evidence by itself. The
 self-test includes divergent pagination, configured helper indirection,
 literal query strings, interpolated routes, conditional bodies, typed spreads,
 computed fields, unmapped routes, endpoint scoping, and method discrimination.
-Every fixture asserts both output and process exit code.
+The suite also covers duplicate Gin registrations, middleware chains, bind
+variants, group shadowing, nested struct tags, and large group scans. Every
+fixture asserts both output and process exit code.
 
 `rules.unresolved` defaults to `"warn"` for an inspectable first adoption.
 Change it to `"error"` before making Tessera a required merge gate. Unmapped

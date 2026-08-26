@@ -7,6 +7,9 @@ type Token = { value: string; kind: "identifier" | "string" | "symbol"; line: nu
 type ParsedFile = { absolute: string; relative: string; tokens: Token[] };
 type FunctionBody = { file: ParsedFile; tokens: Token[]; line: number };
 type Call = { name: string; args: Token[][]; start: number; end: number; line: number };
+type StructDefinition = { file: string; tokens: Token[] };
+type GroupDefinition = { prefix: string; unresolved: string[] };
+type GroupAssignment = { variable: string; receiver: string; route: string; line: number };
 
 const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
 const DEFAULT_READERS: ReaderShape[] = [
@@ -168,18 +171,21 @@ function parseFunctions(file: ParsedFile): Map<string, FunctionBody> {
   return result;
 }
 
-function structFields(tokens: Token[]): string[] {
+function structFields(tokens: Token[], tagName: "json" | "form"): string[] {
   const fields = new Set<string>();
+  let depth = 0;
   for (const token of tokens) {
-    if (token.kind !== "string") continue;
-    const match = token.value.match(/(?:^|\s)json:"([^" ,]+)(?:,[^"]*)?"/);
+    if (token.value === "{") { depth += 1; continue; }
+    if (token.value === "}") { depth = Math.max(0, depth - 1); continue; }
+    if (token.kind !== "string" || depth !== 0) continue;
+    const match = token.value.match(new RegExp(`(?:^|\\s)${tagName}:"([^" ,]+)(?:,[^"]*)?"`));
     if (match?.[1] && match[1] !== "-") fields.add(match[1]);
   }
   return [...fields];
 }
 
-function namedStructs(files: ParsedFile[]): Map<string, Array<{ file: string; fields: string[] }>> {
-  const result = new Map<string, Array<{ file: string; fields: string[] }>>();
+function namedStructs(files: ParsedFile[]): Map<string, StructDefinition[]> {
+  const result = new Map<string, StructDefinition[]>();
   for (const file of files) {
     const tokens = file.tokens;
     for (let index = 0; index < tokens.length - 3; index += 1) {
@@ -188,7 +194,7 @@ function namedStructs(files: ParsedFile[]): Map<string, Array<{ file: string; fi
       if (end !== undefined) {
         const name = tokens[index + 1]!.value;
         const values = result.get(name) ?? [];
-        values.push({ file: file.relative, fields: structFields(tokens.slice(index + 4, end)) });
+        values.push({ file: file.relative, tokens: tokens.slice(index + 4, end) });
         result.set(name, values);
       }
     }
@@ -196,7 +202,7 @@ function namedStructs(files: ParsedFile[]): Map<string, Array<{ file: string; fi
   return result;
 }
 
-function bindingFields(body: FunctionBody, variable: string, structs: Map<string, Array<{ file: string; fields: string[] }>>): { fields: string[]; resolved: boolean } {
+function bindingFields(body: FunctionBody, variable: string, structs: Map<string, StructDefinition[]>, tagName: "json" | "form"): { fields: string[]; resolved: boolean } {
   const tokens = body.tokens;
   for (let index = 0; index < tokens.length - 2; index += 1) {
     if (tokens[index]!.value === "var" && tokens[index + 1]!.value === variable) {
@@ -204,16 +210,16 @@ function bindingFields(body: FunctionBody, variable: string, structs: Map<string
       if (tokens[typeIndex]!.value === "*") typeIndex += 1;
       if (tokens[typeIndex]!.value === "struct" && tokens[typeIndex + 1]!.value === "{") {
         const end = closing(tokens, typeIndex + 1, "{", "}");
-        return end === undefined ? { fields: [], resolved: false } : { fields: structFields(tokens.slice(typeIndex + 2, end)), resolved: true };
+        return end === undefined ? { fields: [], resolved: false } : { fields: structFields(tokens.slice(typeIndex + 2, end), tagName), resolved: true };
       }
       const candidates = structs.get(tokens[typeIndex]!.value) ?? [];
       const sameDirectory = candidates.filter((candidate) => path.dirname(candidate.file) === path.dirname(body.file.relative));
       const selected = sameDirectory.length === 1 ? sameDirectory[0] : candidates.length === 1 ? candidates[0] : undefined;
-      if (selected) return { fields: selected.fields, resolved: true };
+      if (selected) return { fields: structFields(selected.tokens, tagName), resolved: true };
     }
     if (tokens[index]!.value === variable && tokens[index + 1]!.value === ":=" && tokens[index + 2]!.value === "struct" && tokens[index + 3]?.value === "{") {
       const end = closing(tokens, index + 3, "{", "}");
-      return end === undefined ? { fields: [], resolved: false } : { fields: structFields(tokens.slice(index + 4, end)), resolved: true };
+      return end === undefined ? { fields: [], resolved: false } : { fields: structFields(tokens.slice(index + 4, end), tagName), resolved: true };
     }
   }
   return { fields: [], resolved: false };
@@ -237,7 +243,7 @@ function readerArgumentIndex(callName: string, shapes: ReaderShape[], contexts: 
   return undefined;
 }
 
-function inspectHandler(body: FunctionBody, readerShapes: ReaderShape[], structs: Map<string, Array<{ file: string; fields: string[] }>>): Pick<ReadSet, "query" | "body" | "unresolved"> {
+function inspectHandler(body: FunctionBody, readerShapes: ReaderShape[], structs: Map<string, StructDefinition[]>): Pick<ReadSet, "query" | "body" | "unresolved"> {
   const query = new Set<string>();
   const fields = new Set<string>();
   const unresolved: string[] = [];
@@ -251,17 +257,25 @@ function inspectHandler(body: FunctionBody, readerShapes: ReaderShape[], structs
       else unresolved.push(`${body.file.relative}:${call.line} query reader '${call.name}' uses a computed field name`);
     }
     const shortName = call.name.split(".").at(-1);
-    if (["ShouldBindJSON", "BindJSON", "ShouldBindWith"].includes(shortName ?? "")) {
+    const receiver = call.name.split(".")[0];
+    const contextBind = receiver !== undefined && contexts.has(receiver) && shortName?.includes("Bind");
+    const bodyBind = contextBind && ["ShouldBindJSON", "BindJSON", "ShouldBindWith"].includes(shortName ?? "");
+    const queryBind = contextBind && ["ShouldBindQuery", "BindQuery"].includes(shortName ?? "");
+    if (bodyBind || queryBind) {
       const argument = call.args[0] ?? [];
       const ampersand = argument.findIndex((token) => token.value === "&");
       const variable = argument[ampersand + 1];
       if (variable?.kind === "identifier") {
-        const result = bindingFields(body, variable.value, structs);
-        for (const field of result.fields) fields.add(field);
+        const result = bindingFields(body, variable.value, structs, queryBind ? "form" : "json");
+        for (const field of result.fields) (queryBind ? query : fields).add(field);
         if (!result.resolved) unresolved.push(`${body.file.relative}:${call.line} bind target '${variable.value}' cannot be resolved`);
       } else unresolved.push(`${body.file.relative}:${call.line} bind target is computed; cannot analyze`);
+    } else if (contextBind) {
+      // Generic, URI, and future bind variants are deliberately unresolved:
+      // guessing their location would turn an unsupported read into false assurance.
+      unresolved.push(`${body.file.relative}:${call.line} bind shape '${call.name}' is not modeled`);
     }
-    if (nameArg === undefined && !shapeMap.has(call.name) && !["ShouldBindJSON", "BindJSON", "ShouldBindWith"].includes(shortName ?? "")) {
+    if (nameArg === undefined && !shapeMap.has(call.name) && !contextBind) {
       const takesContext = call.args.some((argument) => argument.length === 1 && contexts.has(argument[0]!.value));
       const literal = call.args.find((argument) => argument.length === 1 && argument[0]!.kind === "string")?.[0];
       if (takesContext && literal) unresolved.push(`${body.file.relative}:${call.line} possible unconfigured query reader '${call.name}' for '${literal.value}'`);
@@ -284,9 +298,28 @@ function concatenate(prefix: string, route: string): string {
   return normalizeRoute(`${prefix.replace(/\/$/, "")}/${route.replace(/^\//, "")}`);
 }
 
-function intersection(left: string[], right: string[]): string[] {
-  const values = new Set(right);
-  return left.filter((item) => values.has(item));
+function union(left: string[], right: string[]): string[] {
+  return [...new Set([...left, ...right])].sort();
+}
+
+function groupAssignmentAt(tokens: Token[], index: number): GroupAssignment | undefined {
+  const variable = tokens[index];
+  if (variable?.kind !== "identifier" || tokens[index + 1]?.value !== ":=") return undefined;
+  // Group calls are syntactically adjacent to the assignment. Keeping this scan
+  // bounded avoids restarting a file-wide search for every declaration.
+  const limit = Math.min(tokens.length, index + 8);
+  for (let open = index + 2; open < limit; open += 1) {
+    if (tokens[open]!.value !== "(") continue;
+    const call = callAt(tokens, open);
+    if (!call?.name.endsWith(".Group") || call.args[0]?.[0]?.kind !== "string") return undefined;
+    return {
+      variable: variable.value,
+      receiver: call.name.slice(0, -".Group".length),
+      route: call.args[0][0]!.value,
+      line: variable.line,
+    };
+  }
+  return undefined;
 }
 
 export class GoGinAdapter implements ServerAdapter {
@@ -299,49 +332,85 @@ export class GoGinAdapter implements ServerAdapter {
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new ConfigError(`server root not found: ${config.root}`);
     const files = walk(root).map((absolute) => ({ absolute, relative: path.relative(root, absolute).replaceAll(path.sep, "/"), tokens: tokenize(fs.readFileSync(absolute, "utf8")) }));
     const functions = new Map<string, FunctionBody[]>();
-    for (const file of files) for (const [name, body] of parseFunctions(file)) functions.set(name, [...(functions.get(name) ?? []), body]);
+    const functionsByFile = new Map<string, Map<string, FunctionBody>>();
+    for (const file of files) {
+      const parsed = parseFunctions(file);
+      functionsByFile.set(file.absolute, parsed);
+      for (const [name, body] of parsed) functions.set(name, [...(functions.get(name) ?? []), body]);
+    }
     const structs = namedStructs(files);
     const readerShapes = config.readerShapes?.length ? config.readerShapes : DEFAULT_READERS;
     const results = new Map<string, ReadSet>();
 
     for (const file of files) {
-      const groups = new Map<string, string>();
-      for (let index = 0; index < file.tokens.length; index += 1) {
-        const token = file.tokens[index]!;
-        if (token.kind === "identifier" && file.tokens[index + 1]?.value === ":=") {
-          const open = file.tokens.findIndex((candidate, candidateIndex) => candidateIndex > index + 1 && candidate.value === "(");
-          if (open > 0 && open < index + 8) {
-            const call = callAt(file.tokens, open);
-            if (call?.name.endsWith(".Group") && call.args[0]?.[0]?.kind === "string") {
-              const receiver = call.name.slice(0, -".Group".length);
-              groups.set(token.value, concatenate(groups.get(receiver) ?? "", call.args[0][0]!.value));
-            }
-          }
+      for (const scope of functionsByFile.get(file.absolute)?.values() ?? []) {
+        const groups = new Map<string, GroupDefinition>();
+        const lexicalScopes: Array<Map<string, GroupDefinition | undefined>> = [];
+        const assignments = new Map<number, GroupAssignment>();
+        const assignmentCounts = new Map<string, number>();
+        for (let index = 0; index < scope.tokens.length; index += 1) {
+          const assignment = groupAssignmentAt(scope.tokens, index);
+          if (!assignment) continue;
+          assignments.set(index, assignment);
+          assignmentCounts.set(assignment.variable, (assignmentCounts.get(assignment.variable) ?? 0) + 1);
         }
-        if (token.value !== "(") continue;
-        const call = callAt(file.tokens, index);
-        if (!call) continue;
-        const parts = call.name.split(".");
-        const method = parts.at(-1)?.toUpperCase();
-        const receiver = parts.slice(0, -1).join(".");
-        if (!method || !HTTP_METHODS.has(method) || call.args[0]?.[0]?.kind !== "string") continue;
-        const route = concatenate(groups.get(receiver) ?? "", call.args[0][0]!.value);
-        const handler = handlerFromArgument(call.args[1] ?? [], functions, file);
-        const site: Site = { file: file.relative, line: call.line };
-        const inspected = handler ? inspectHandler(handler, readerShapes, structs) : { query: [], body: [], unresolved: [`${file.relative}:${call.line} route handler cannot be resolved`] };
-        const endpointKey = `${method} ${route}`;
-        const handlerSite = handler ? { file: handler.file.relative, line: handler.line } : site;
-        const extracted: ReadSet = { method, route, ...inspected, site: handlerSite };
-        const existing = results.get(endpointKey);
-        if (existing) {
-          results.set(endpointKey, {
-            ...existing,
-            query: intersection(existing.query, extracted.query),
-            body: intersection(existing.body, extracted.body),
-            unresolved: [...new Set([...existing.unresolved, ...extracted.unresolved, `${file.relative}:${call.line} duplicate route registration cannot be disambiguated`])],
-            sites: [...(existing.sites ?? [existing.site]), ...(extracted.sites ?? [extracted.site])],
-          });
-        } else results.set(endpointKey, extracted);
+
+        for (let index = 0; index < scope.tokens.length; index += 1) {
+          const token = scope.tokens[index]!;
+          if (token.value === "{") {
+            lexicalScopes.push(new Map());
+            continue;
+          }
+          if (token.value === "}") {
+            for (const [variable, previous] of lexicalScopes.pop() ?? []) {
+              if (previous) groups.set(variable, previous);
+              else groups.delete(variable);
+            }
+            continue;
+          }
+          const assignment = assignments.get(index);
+          if (assignment) {
+            const parent = groups.get(assignment.receiver);
+            const unresolved = [...(parent?.unresolved ?? [])];
+            const count = assignmentCounts.get(assignment.variable) ?? 0;
+            if (count > 1) unresolved.push(`${file.relative}:${assignment.line} router group variable '${assignment.variable}' is assigned ${count} times in one function; block shadowing cannot be resolved`);
+            const lexicalScope = lexicalScopes.at(-1);
+            if (lexicalScope && !lexicalScope.has(assignment.variable)) lexicalScope.set(assignment.variable, groups.get(assignment.variable));
+            groups.set(assignment.variable, { prefix: concatenate(parent?.prefix ?? "", assignment.route), unresolved });
+          }
+          if (token.value !== "(") continue;
+          const call = callAt(scope.tokens, index);
+          if (!call) continue;
+          const parts = call.name.split(".");
+          const method = parts.at(-1)?.toUpperCase();
+          const receiver = parts.slice(0, -1).join(".");
+          if (!method || !HTTP_METHODS.has(method) || call.args[0]?.[0]?.kind !== "string") continue;
+          const group = groups.get(receiver);
+          const route = concatenate(group?.prefix ?? "", call.args[0][0]!.value);
+          // Gin accepts variadic middleware, but the final argument is the endpoint
+          // handler. Resolving that position fails closed instead of inspecting middleware.
+          const handler = handlerFromArgument(call.args.at(-1) ?? [], functions, file);
+          const site: Site = { file: file.relative, line: call.line };
+          const inspected = handler ? inspectHandler(handler, readerShapes, structs) : { query: [], body: [], unresolved: [`${file.relative}:${call.line} route handler cannot be resolved`] };
+          inspected.unresolved.push(...(group?.unresolved ?? []));
+          const endpointKey = `${method} ${route}`;
+          const handlerSite = handler ? { file: handler.file.relative, line: handler.line } : site;
+          const extracted: ReadSet = { method, route, ...inspected, site: handlerSite };
+          const existing = results.get(endpointKey);
+          if (existing) {
+            // Duplicate registrations commonly represent mutually exclusive setup
+            // branches. Union can hide a branch-specific miss (a false negative), but
+            // intersection makes every fallback handler create floods of false positives.
+            // Keep the unresolved note so callers still see that branch parity is unknown.
+            results.set(endpointKey, {
+              ...existing,
+              query: union(existing.query, extracted.query),
+              body: union(existing.body, extracted.body),
+              unresolved: [...new Set([...existing.unresolved, ...extracted.unresolved, `${file.relative}:${call.line} duplicate route registration cannot be disambiguated`])],
+              sites: [...(existing.sites ?? [existing.site]), ...(extracted.sites ?? [extracted.site])],
+            });
+          } else results.set(endpointKey, extracted);
+        }
       }
     }
 
@@ -356,7 +425,7 @@ export class GoGinAdapter implements ServerAdapter {
         results.set(`${method} ${route}`, { method, route, query: [], body: [], unresolved: [`${relative}:1 route override file not found`], site });
         continue;
       }
-      const bodies = [...parseFunctions(file).values()];
+      const bodies = [...(functionsByFile.get(file.absolute)?.values() ?? [])];
       const body = bodies.length === 1 ? bodies[0] : undefined;
       const inspected = body
         ? inspectHandler(body, readerShapes, structs)
