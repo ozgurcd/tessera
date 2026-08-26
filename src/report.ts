@@ -4,12 +4,22 @@ function location(site: Site): string {
   return `${site.file}:${site.line}`;
 }
 
+function locations(sites: Site[]): string {
+  return sites.map(location).join(", ");
+}
+
+function endpointSites(endpoint: SendSet | ReadSet): Site[] {
+  return "sites" in endpoint && endpoint.sites?.length ? endpoint.sites : [endpoint.site];
+}
+
 export function findingLine(finding: Finding): string {
   if (finding.kind === "unmatched") {
     if (finding.direction === "sent-not-read") {
-      return `UNMATCHED  ${finding.method} ${finding.route}  ${finding.location} field '${finding.field}' is sent by ${location(finding.source)} but no handler field reads it (${location(finding.counterpart)})`;
+      const counterparts = finding.counterparts ?? [finding.counterpart];
+      const mismatch = counterparts.length > 1 ? "is not read by every possible handler" : "no handler field reads it";
+      return `UNMATCHED  ${finding.method} ${finding.route}  ${finding.location} field '${finding.field}' is sent by ${location(finding.source)} but ${mismatch} (${locations(counterparts)})`;
     }
-    return `UNMATCHED  ${finding.method} ${finding.route}  ${finding.location} field '${finding.field}' is read by ${location(finding.source)} but no client sends it (${location(finding.counterpart)})`;
+    return `UNMATCHED  ${finding.method} ${finding.route}  ${finding.location} field '${finding.field}' is read by ${locations(finding.sources ?? [finding.source])} but no client call sends it (${locations(finding.counterparts ?? [finding.counterpart])})`;
   }
   if (finding.kind === "unresolved") return `UNRESOLVED ${location(finding.site)}  ${finding.message}`;
   return `UNMAPPED   ${finding.method} ${finding.route}  (${finding.error ? "error, NOT checked" : "skipped, NOT checked"})`;
@@ -23,7 +33,7 @@ export function humanResult(result: CheckResult): string {
 
 function endpointLine(kind: "CLIENT" | "SERVER", endpoint: SendSet | ReadSet): string {
   const unresolved = endpoint.unresolved.length ? ` unresolved=[${endpoint.unresolved.join("; ")}]` : "";
-  return `${kind} ${endpoint.method} ${endpoint.route} query=[${endpoint.query.join(", ")}] body=[${endpoint.body.join(", ")}] ${location(endpoint.site)}${unresolved}`;
+  return `${kind} ${endpoint.method} ${endpoint.route} query=[${endpoint.query.join(", ")}] body=[${endpoint.body.join(", ")}] ${locations(endpointSites(endpoint))}${unresolved}`;
 }
 
 export function humanList(sends: SendSet[], reads: ReadSet[]): string {
@@ -36,7 +46,7 @@ export function humanExplain(route: string, sends: SendSet[], reads: ReadSet[]):
   if (!matchingSends.length && !matchingReads.length) return `tessera: no extracted endpoint matches ${route}`;
   return [
     `Route ${route}`,
-    ...matchingSends.map((item) => `SENT ${item.method}  query=[${item.query.join(", ")}] body=[${item.body.join(", ")}]  ${location(item.site)}`),
-    ...matchingReads.map((item) => `READ ${item.method}  query=[${item.query.join(", ")}] body=[${item.body.join(", ")}]  ${location(item.site)}`),
+    ...matchingSends.map((item) => `SENT ${item.method}  query=[${item.query.join(", ")}] body=[${item.body.join(", ")}]  ${locations(endpointSites(item))}`),
+    ...matchingReads.map((item) => `READ ${item.method}  query=[${item.query.join(", ")}] body=[${item.body.join(", ")}]  ${locations(endpointSites(item))}`),
   ].join("\n");
 }

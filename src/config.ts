@@ -81,7 +81,8 @@ export function loadConfig(configPath: string): { config: TesseraConfig; directo
     const reason = entry && typeof entry === "object" ? (entry as Record<string, unknown>).reason : undefined;
     const record = entry as Record<string, unknown>;
     if (typeof reason !== "string" || !reason.trim()) throw new ConfigError(`allow[${index}] requires a non-empty reason`);
-    if (["method", "route", "field"].some((key) => typeof record[key] !== "string" || !(record[key] as string).trim())) throw new ConfigError(`allow[${index}] requires method, route, and field`);
+    if (["method", "route", "location", "field"].some((key) => typeof record[key] !== "string" || !(record[key] as string).trim())) throw new ConfigError(`allow[${index}] requires method, route, location, and field`);
+    if (record.location !== "query" && record.location !== "body") throw new ConfigError(`allow[${index}].location must be 'query' or 'body'`);
   }
   return {
     directory: path.dirname(absolute),
@@ -95,7 +96,7 @@ export function loadConfig(configPath: string): { config: TesseraConfig; directo
 }
 
 export const STARTER_CONFIG = `{
-  "$schema": "https://raw.githubusercontent.com/ozgurcd/tessera/v0.1.0/tessera.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ozgurcd/tessera/main/tessera.schema.json",
   "client": {
     "tsconfig": "./tsconfig.json",
     "include": ["src/**/*.ts"],

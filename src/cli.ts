@@ -31,6 +31,8 @@ Exit codes: 0 clean, 1 unmatched/error-unmapped, 2 configuration or usage error,
 
 Blind spots:
   Headers and cookies are not analyzed.
+  Path parameters are normalized for routing, not compared as fields.
+  Response status codes and payload shapes are not analyzed.
   Dynamically computed field names cannot be analyzed.
   Non-JSON bodies (FormData, streams, binary) cannot be analyzed.
   Only files matched by client.include are scanned; other clients are out of frame.

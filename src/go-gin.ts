@@ -330,7 +330,8 @@ export class GoGinAdapter implements ServerAdapter {
         const site: Site = { file: file.relative, line: call.line };
         const inspected = handler ? inspectHandler(handler, readerShapes, structs) : { query: [], body: [], unresolved: [`${file.relative}:${call.line} route handler cannot be resolved`] };
         const endpointKey = `${method} ${route}`;
-        const extracted = { method, route, ...inspected, site: handler ? { file: handler.file.relative, line: handler.line } : site };
+        const handlerSite = handler ? { file: handler.file.relative, line: handler.line } : site;
+        const extracted: ReadSet = { method, route, ...inspected, site: handlerSite };
         const existing = results.get(endpointKey);
         if (existing) {
           results.set(endpointKey, {
@@ -338,6 +339,7 @@ export class GoGinAdapter implements ServerAdapter {
             query: intersection(existing.query, extracted.query),
             body: intersection(existing.body, extracted.body),
             unresolved: [...new Set([...existing.unresolved, ...extracted.unresolved, `${file.relative}:${call.line} duplicate route registration cannot be disambiguated`])],
+            sites: [...(existing.sites ?? [existing.site]), ...(extracted.sites ?? [extracted.site])],
           });
         } else results.set(endpointKey, extracted);
       }
@@ -350,7 +352,8 @@ export class GoGinAdapter implements ServerAdapter {
       const route = normalizeRoute(match[2]!);
       const file = files.find((candidate) => candidate.relative === relative.replaceAll("\\", "/"));
       if (!file) {
-        results.set(`${method} ${route}`, { method, route, query: [], body: [], unresolved: [`${relative}:1 route override file not found`], site: { file: relative, line: 1 } });
+        const site = { file: relative, line: 1 };
+        results.set(`${method} ${route}`, { method, route, query: [], body: [], unresolved: [`${relative}:1 route override file not found`], site });
         continue;
       }
       const bodies = [...parseFunctions(file).values()];
@@ -358,7 +361,8 @@ export class GoGinAdapter implements ServerAdapter {
       const inspected = body
         ? inspectHandler(body, readerShapes, structs)
         : { query: [], body: [], unresolved: [`${file.relative}:1 route override file has ${bodies.length} functions; handler cannot be disambiguated`] };
-      results.set(`${method} ${route}`, { method, route, ...inspected, site: { file: file.relative, line: body?.line ?? 1 } });
+      const site = { file: file.relative, line: body?.line ?? 1 };
+      results.set(`${method} ${route}`, { method, route, ...inspected, site });
     }
     return [...results.values()].sort((a, b) => a.method.localeCompare(b.method) || a.route.localeCompare(b.route));
   }

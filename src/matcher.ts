@@ -1,16 +1,69 @@
-import type { AllowEntry, CheckResult, Finding, ReadSet, RulesConfig, SendSet } from "./types.js";
+import type { AllowEntry, CheckResult, FieldLocation, Finding, ReadSet, RulesConfig, SendSet, Site } from "./types.js";
 
 function key(method: string, route: string): string {
   return `${method.toUpperCase()} ${route}`;
 }
 
-function allowed(allow: AllowEntry[], method: string, route: string, field: string): boolean {
-  return allow.some((entry) => entry.method.toUpperCase() === method && entry.route === route && entry.field === field);
+function allowed(allow: AllowEntry[], method: string, route: string, location: FieldLocation, field: string): boolean {
+  return allow.some((entry) => entry.method.toUpperCase() === method && entry.route === route && entry.location === location && entry.field === field);
+}
+
+function siteKey(site: Site): string {
+  return `${site.file}:${site.line}`;
+}
+
+function uniqueSites(sites: Site[]): Site[] {
+  const seen = new Set<string>();
+  return sites.filter((site) => {
+    const value = siteKey(site);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
+function readSites(read: ReadSet): Site[] {
+  return uniqueSites(read.sites?.length ? read.sites : [read.site]);
+}
+
+function intersect(left: string[], right: string[]): string[] {
+  const values = new Set(right);
+  return left.filter((field) => values.has(field));
+}
+
+function readMapFor(reads: ReadSet[]): Map<string, ReadSet> {
+  const result = new Map<string, ReadSet>();
+  for (const read of reads) {
+    const endpoint = key(read.method, read.route);
+    const existing = result.get(endpoint);
+    if (!existing) {
+      result.set(endpoint, { ...read });
+      continue;
+    }
+    result.set(endpoint, {
+      ...existing,
+      query: intersect(existing.query, read.query),
+      body: intersect(existing.body, read.body),
+      unresolved: [...new Set([...existing.unresolved, ...read.unresolved, "multiple server read sets represent this endpoint"])],
+      sites: uniqueSites([...readSites(existing), ...readSites(read)]),
+    });
+  }
+  return result;
+}
+
+function deduplicate(findings: Finding[]): Finding[] {
+  const seen = new Set<string>();
+  return findings.filter((finding) => {
+    const value = JSON.stringify(finding);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
 }
 
 export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, allow: AllowEntry[]): CheckResult {
   const findings: Finding[] = [];
-  const readMap = new Map(reads.map((read) => [key(read.method, read.route), read]));
+  const readMap = readMapFor(reads);
   const sendMap = new Map<string, SendSet[]>();
   for (const send of sends) {
     const endpoint = key(send.method, send.route);
@@ -27,30 +80,43 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     for (const location of ["query", "body"] as const) {
       const readFields = new Set(read[location]);
       for (const field of send[location]) {
-        if (!readFields.has(field) && !allowed(allow, send.method, send.route, field)) {
-          findings.push({ kind: "unmatched", method: send.method, route: send.route, location, field, direction: "sent-not-read", source: send.site, counterpart: read.site });
+        if (!readFields.has(field) && !allowed(allow, send.method, send.route, location, field)) {
+          const counterparts = readSites(read);
+          findings.push({ kind: "unmatched", method: send.method, route: send.route, location, field, direction: "sent-not-read", source: send.site, counterpart: counterparts[0]!, ...(counterparts.length > 1 ? { counterparts } : {}) });
         }
       }
     }
   }
-  for (const read of reads) {
+  for (const read of readMap.values()) {
     if (sendMap.has(key(read.method, read.route))) {
       for (const message of read.unresolved) findings.push({ kind: "unresolved", message, site: read.site });
     }
     if (!rules.reverseDirection) continue;
     const endpointSends = sendMap.get(key(read.method, read.route));
     if (!endpointSends?.length) continue;
-    const source = endpointSends[0]!;
+    const sources = readSites(read);
+    const counterparts = uniqueSites(endpointSends.map((send) => send.site));
     for (const location of ["query", "body"] as const) {
       const sentFields = new Set(endpointSends.flatMap((send) => send[location]));
       for (const field of read[location]) {
-        if (!sentFields.has(field) && !allowed(allow, read.method, read.route, field)) {
-          findings.push({ kind: "unmatched", method: read.method, route: read.route, location, field, direction: "read-not-sent", source: read.site, counterpart: source.site });
+        if (!sentFields.has(field) && !allowed(allow, read.method, read.route, location, field)) {
+          findings.push({
+            kind: "unmatched",
+            method: read.method,
+            route: read.route,
+            location,
+            field,
+            direction: "read-not-sent",
+            source: sources[0]!,
+            counterpart: counterparts[0]!,
+            ...(sources.length > 1 ? { sources } : {}),
+            ...(counterparts.length > 1 ? { counterparts } : {}),
+          });
         }
       }
     }
   }
-  const unique = findings.filter((finding, index) => findings.findIndex((other) => JSON.stringify(other) === JSON.stringify(finding)) === index);
+  const unique = deduplicate(findings);
   const summary = {
     unmatched: unique.filter((finding) => finding.kind === "unmatched").length,
     unresolved: unique.filter((finding) => finding.kind === "unresolved").length,

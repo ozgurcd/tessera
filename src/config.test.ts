@@ -31,3 +31,16 @@ test("allow entries without reasons are configuration errors", () => {
     assert.throws(() => loadConfig(file), ConfigError);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("allow entries require an explicit query or body location", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "tessera-config-"));
+  const file = path.join(directory, "tessera.config.json");
+  try {
+    fs.writeFileSync(file, JSON.stringify({
+      client: { tsconfig: "./tsconfig.json" },
+      server: { adapter: "go-gin", root: "./server" },
+      allow: [{ method: "POST", route: "/legacy", field: "trace_id", reason: "proxy" }],
+    }));
+    assert.throws(() => loadConfig(file), /location/);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

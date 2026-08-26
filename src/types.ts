@@ -1,4 +1,5 @@
 export type Site = { file: string; line: number };
+export type FieldLocation = "query" | "body";
 
 export type SendSet = {
   method: string;
@@ -9,7 +10,16 @@ export type SendSet = {
   site: Site;
 };
 
-export type ReadSet = SendSet;
+export type ReadSet = {
+  method: string;
+  route: string;
+  query: string[];
+  body: string[];
+  unresolved: string[];
+  site: Site;
+  /** All handler sites represented by this endpoint; `site` remains for JSON v1 compatibility. */
+  sites?: Site[];
+};
 
 export interface ServerAdapter {
   name: string;
@@ -40,6 +50,7 @@ export type RulesConfig = {
 export type AllowEntry = {
   method: string;
   route: string;
+  location: FieldLocation;
   field: string;
   reason: string;
 };
@@ -52,7 +63,7 @@ export type TesseraConfig = {
 };
 
 export type Finding =
-  | { kind: "unmatched"; method: string; route: string; location: "query" | "body"; field: string; direction: "sent-not-read" | "read-not-sent"; source: Site; counterpart: Site }
+  | { kind: "unmatched"; method: string; route: string; location: FieldLocation; field: string; direction: "sent-not-read" | "read-not-sent"; source: Site; counterpart: Site; sources?: Site[]; counterparts?: Site[] }
   | { kind: "unresolved"; message: string; site: Site }
   | { kind: "unmapped"; method: string; route: string; site: Site; error: boolean };
 

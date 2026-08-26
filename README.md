@@ -2,7 +2,8 @@
 
 Tessera statically checks that a hand-written TypeScript HTTP client and its
 server agree about the request wire. It finds fields the client sends in a
-path, query string, or JSON body that the matching server handler never reads.
+query string or JSON body that the matching server handler never reads. Paths
+identify endpoints; path parameters are not compared as fields.
 
 The comparison is always scoped to one HTTP method and normalized route. A
 field read by `GET /items` cannot hide a defect in `POST /items`, and a field
@@ -53,7 +54,7 @@ check. A complete configuration looks like this:
 
 ```jsonc
 {
-  "$schema": "https://raw.githubusercontent.com/ozgurcd/tessera/v0.1.0/tessera.schema.json",
+  "$schema": "https://raw.githubusercontent.com/ozgurcd/tessera/main/tessera.schema.json",
   "client": {
     "tsconfig": "./tsconfig.json",
     "include": ["src/lib/**/*.ts"],
@@ -80,6 +81,7 @@ check. A complete configuration looks like this:
     {
       "method": "POST",
       "route": "/api/v1/legacy",
+      "location": "body",
       "field": "trace_id",
       "reason": "consumed by the proxy before the handler"
     }
@@ -87,8 +89,10 @@ check. A complete configuration looks like this:
 }
 ```
 
-Every allow entry requires a reason. Relative paths are resolved from the
-configuration file. JSON with line and block comments is accepted.
+Every allow entry requires a query/body location and a reason, preventing an
+exception for one part of a request from silently allowing the same field name
+in another. Relative paths are resolved from the configuration file. JSON with
+line and block comments is accepted.
 
 ## Commands
 
@@ -175,6 +179,10 @@ is expected to exercise every server field.
 Tessera deliberately does not claim coverage for:
 
 - headers and cookies;
+- path parameter names and values as fields; normalized route shapes are used
+  only to pair client calls with server handlers;
+- response status codes and response payload shapes; v0.1 analyzes requests
+  only;
 - dynamically computed field names on either side;
 - non-JSON bodies such as `FormData`, streams, and binary data;
 - clients outside `client.include`, including curl and other services;

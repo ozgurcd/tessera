@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://raw.githubusercontent.com/ozgurcd/tessera/v0.1.0/tessera.schema.json",
+  "$id": "https://raw.githubusercontent.com/ozgurcd/tessera/main/tessera.schema.json",
   "title": "Tessera configuration",
   "type": "object",
   "additionalProperties": false,
@@ -52,10 +52,11 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["method", "route", "field", "reason"],
+        "required": ["method", "route", "location", "field", "reason"],
         "properties": {
           "method": { "type": "string", "minLength": 1 },
           "route": { "type": "string", "pattern": "^/" },
+          "location": { "enum": ["query", "body"] },
           "field": { "type": "string", "minLength": 1 },
           "reason": { "type": "string", "minLength": 1 }
         }
