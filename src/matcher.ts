@@ -1,4 +1,4 @@
-import type { AllowEntry, CheckResult, FieldLocation, Finding, ReadSet, RulesConfig, SendSet, Site } from "./types.js";
+import type { AllowEntry, CheckResult, FieldLocation, Finding, ReadSet, RulesConfig, SendSet, Site, UnresolvedDetail } from "./types.js";
 
 function key(method: string, route: string): string {
   return `${method.toUpperCase()} ${route}`;
@@ -26,6 +26,22 @@ function readSites(read: ReadSet): Site[] {
   return uniqueSites(read.sites?.length ? read.sites : [read.site]);
 }
 
+function readUnresolved(read: ReadSet): UnresolvedDetail[] {
+  return read.unresolvedDetails?.length
+    ? read.unresolvedDetails
+    : read.unresolved.map((message) => ({ message, site: read.site }));
+}
+
+function uniqueUnresolved(details: UnresolvedDetail[]): UnresolvedDetail[] {
+  const seen = new Set<string>();
+  return details.filter((detail) => {
+    const value = `${siteKey(detail.site)}:${detail.message}`;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
 function intersect(left: string[], right: string[]): string[] {
   const values = new Set(right);
   return left.filter((field) => values.has(field));
@@ -40,11 +56,17 @@ function readMapFor(reads: ReadSet[]): Map<string, ReadSet> {
       result.set(endpoint, { ...read });
       continue;
     }
+    const unresolvedDetails = uniqueUnresolved([
+      ...readUnresolved(existing),
+      ...readUnresolved(read),
+      { message: "multiple server read sets represent this endpoint", site: existing.site },
+    ]);
     result.set(endpoint, {
       ...existing,
       query: intersect(existing.query, read.query),
       body: intersect(existing.body, read.body),
-      unresolved: [...new Set([...existing.unresolved, ...read.unresolved, "multiple server read sets represent this endpoint"])],
+      unresolved: unresolvedDetails.map((detail) => detail.message),
+      unresolvedDetails,
       sites: uniqueSites([...readSites(existing), ...readSites(read)]),
     });
   }
@@ -89,7 +111,7 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
   }
   for (const read of readMap.values()) {
     if (sendMap.has(key(read.method, read.route))) {
-      for (const message of read.unresolved) findings.push({ kind: "unresolved", message, site: read.site });
+      for (const detail of readUnresolved(read)) findings.push({ kind: "unresolved", message: detail.message, site: detail.site });
     }
     if (!rules.reverseDirection) continue;
     const endpointSends = sendMap.get(key(read.method, read.route));

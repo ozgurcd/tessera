@@ -1,4 +1,5 @@
 export type Site = { file: string; line: number };
+export type UnresolvedDetail = { message: string; site: Site };
 export type FieldLocation = "query" | "body";
 
 export type SendSet = {
@@ -16,6 +17,8 @@ export type ReadSet = {
   query: string[];
   body: string[];
   unresolved: string[];
+  /** Exact provenance for adapter findings; `unresolved` remains for JSON v1 compatibility. */
+  unresolvedDetails?: UnresolvedDetail[];
   site: Site;
   /** All handler sites represented by this endpoint; `site` remains for JSON v1 compatibility. */
   sites?: Site[];

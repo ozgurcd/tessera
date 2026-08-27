@@ -9,6 +9,9 @@
 - Correct Go–Gin duplicate-route aggregation, middleware handler selection,
   bind-shape reporting, router-group scoping, nested struct tags, and group
   assignment scan complexity; expand the adversarial suite to sixteen fixtures.
+- Follow same-package Gin context helpers to a bounded depth, report unresolved
+  findings at their true source sites, recognize disjoint router-group scopes,
+  and expand the adversarial suite to eighteen fixtures.
 
 ## 0.1.0 — 2026-08-26
 

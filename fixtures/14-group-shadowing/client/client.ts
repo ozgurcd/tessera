@@ -8,6 +8,7 @@ void fetch(`/second/two?${second}`);
 
 const after = new URLSearchParams();
 after.set("known", "yes");
+after.set("ghost", "intentional finding");
 void fetch(`/first/after?${after}`);
 
 const third = new URLSearchParams();

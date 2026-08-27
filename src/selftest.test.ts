@@ -4,6 +4,6 @@ import { runSelftest } from "./selftest.js";
 
 test("all bundled contract fixtures pass", async () => {
   const result = await runSelftest();
-  assert.equal(result.total, 16);
+  assert.equal(result.total, 18);
   assert.equal(result.passed, result.total, result.lines.join("\n"));
 });

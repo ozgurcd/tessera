@@ -24,9 +24,11 @@ const CASES: readonly SelftestCase[] = [
   { directory: "11-duplicate-route-union", exitCode: 1, includes: ["1 unmatched, 2 unresolved", "body field 'ghost'", "duplicate route registration"], excludes: ["body field 'name'", "body field 'domain'", "body field 'admin_email'"] },
   { directory: "12-middleware-handler", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'name'", "middleware_only"] },
   { directory: "13-bind-shapes", exitCode: 3, includes: ["0 unmatched, 2 unresolved", "bind shape 'c.ShouldBind' is not modeled", "bind shape 'c.ShouldBindUri' is not modeled"], excludes: ["query field 'page'", "query field 'sort'"] },
-  { directory: "14-group-shadowing", exitCode: 3, includes: ["0 unmatched, 2 unresolved", "router group variable 'g' is assigned 2 times in one function"], excludes: ["UNMAPPED", "third"] },
+  { directory: "14-group-shadowing", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "query field 'ghost'"], excludes: ["UNMAPPED", "router group variable", "third"] },
   { directory: "15-nested-struct-tags", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'name'"] },
   { directory: "16-linear-group-scan", exitCode: 1, includes: ["POST /api/large", "1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'known'"] },
+  { directory: "17-context-helper", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "query field 'ghost'"], excludes: ["query field 'active'", "query field 'deleted'"] },
+  { directory: "18-unresolved-provenance", exitCode: 3, includes: ["UNRESOLVED actual.go:5  actual.go:5 bind shape 'c.ShouldBindUri' is not modeled", "0 unmatched, 2 unresolved"], excludes: ["UNRESOLVED fallback.go"] },
 ];
 
 export async function runSelftest(): Promise<SelftestResult> {

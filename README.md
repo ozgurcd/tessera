@@ -130,7 +130,7 @@ tessera init                 write a starter config and detect tsconfig
 tessera check                compare all mapped endpoints (the CI command)
 tessera list                 print both extracted halves
 tessera explain <route>      show sent and read fields side by side
-tessera selftest             run the sixteen bundled known-good/known-bad fixtures
+tessera selftest             run the eighteen bundled known-good/known-bad fixtures
 ```
 
 All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
@@ -177,10 +177,21 @@ configuration-first so project helpers are visible; a helper taking
 `*gin.Context` and a string literal but missing from `readerShapes` is reported
 as unresolved.
 
+Handler inspection follows unqualified calls into same-package functions that
+declare and receive `*gin.Context`, up to four helper edges with cycle
+detection. This covers handler-to-parser chains such as `parseFilters(c)` even
+when the call itself contains no field literal. An ambiguous target or a fifth
+edge is reported as unresolved rather than silently producing an empty read
+set. Cross-package context helpers remain outside this traversal boundary.
+
 For duplicate method/route registrations, the adapter unions the fields read
 by all possible handlers and emits an unresolved note. This favors usable
 output for mutually exclusive setup branches while preserving the warning that
 branch-specific parity cannot be proven.
+
+Router-group variables follow function and lexical brace scopes. Reusing a
+name such as `g` in disjoint `if`/`else` blocks is modeled without a warning;
+multiple declarations in the same lexical block remain unresolved.
 
 This choice keeps the npm package portable. The adapter is isolated behind the
 exported `ServerAdapter` interface so another server implementation does not
@@ -202,7 +213,8 @@ literal query strings, interpolated routes, conditional bodies, typed spreads,
 computed fields, unmapped routes, endpoint scoping, and method discrimination.
 The suite also covers duplicate Gin registrations, middleware chains, bind
 variants, group shadowing, nested struct tags, and large group scans. Every
-fixture asserts both output and process exit code.
+fixture asserts both output and process exit code. Context-helper traversal and
+adapter-level unresolved provenance have dedicated fixtures as well.
 
 `rules.unresolved` defaults to `"warn"` for an inspectable first adoption.
 Change it to `"error"` before making Tessera a required merge gate. Unmapped
@@ -228,6 +240,8 @@ Tessera deliberately does not claim coverage for:
 - endpoints absent from the extracted route map (they are printed and skipped
   unless configured as errors);
 - binding and query-reader shapes outside the adapter's known/configured set;
+- context reads hidden behind cross-package calls or more than four
+  same-package helper edges (the depth boundary is reported as unresolved);
 - the server-to-client direction unless explicitly enabled;
 - runtime behavior. Tessera reads source, never traffic, so a bound field that
   the handler later ignores is invisible.

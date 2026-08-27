@@ -1,13 +1,14 @@
 package server
 
 func routes(r *gin.Engine) {
-    g := r.Group("/first")
-    g.GET("/one", handleKnown)
     if enabled {
+        g := r.Group("/first")
+        g.GET("/one", handleKnown)
+        g.GET("/after", handleKnown)
+    } else {
         g := r.Group("/second")
         g.GET("/two", handleKnown)
     }
-    g.GET("/after", handleKnown)
 }
 
 func otherRoutes(r *gin.Engine) {

@@ -1,17 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "./config.js";
-import type { ReadSet, ReaderShape, ServerAdapter, ServerConfig, Site } from "./types.js";
+import type { ReadSet, ReaderShape, ServerAdapter, ServerConfig, Site, UnresolvedDetail } from "./types.js";
 
 type Token = { value: string; kind: "identifier" | "string" | "symbol"; line: number };
 type ParsedFile = { absolute: string; relative: string; tokens: Token[] };
 type FunctionBody = { file: ParsedFile; tokens: Token[]; line: number };
 type Call = { name: string; args: Token[][]; start: number; end: number; line: number };
 type StructDefinition = { file: string; tokens: Token[] };
-type GroupDefinition = { prefix: string; unresolved: string[] };
-type GroupAssignment = { variable: string; receiver: string; route: string; line: number };
+type GroupDefinition = { prefix: string; unresolved: UnresolvedDetail[] };
+type GroupAssignment = { variable: string; receiver: string; route: string; line: number; scope: number };
+type HandlerInspection = Pick<ReadSet, "query" | "body" | "unresolved" | "unresolvedDetails">;
 
 const HTTP_METHODS = new Set(["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"]);
+// Four helper edges cover normal handler -> parser -> normalizer chains while
+// bounding work and making unexpectedly deep context flow explicit.
+const MAX_CONTEXT_HELPER_DEPTH = 4;
 const DEFAULT_READERS: ReaderShape[] = [
   { call: "c.Query", nameArg: 0 },
   { call: "c.DefaultQuery", nameArg: 0 },
@@ -243,45 +247,108 @@ function readerArgumentIndex(callName: string, shapes: ReaderShape[], contexts: 
   return undefined;
 }
 
-function inspectHandler(body: FunctionBody, readerShapes: ReaderShape[], structs: Map<string, StructDefinition[]>): Pick<ReadSet, "query" | "body" | "unresolved"> {
+function unresolvedAt(file: string, line: number, message: string): UnresolvedDetail {
+  return { message: `${file}:${line} ${message}`, site: { file, line } };
+}
+
+function uniqueUnresolved(details: UnresolvedDetail[]): UnresolvedDetail[] {
+  const seen = new Set<string>();
+  return details.filter((detail) => {
+    const key = `${detail.site.file}:${detail.site.line}:${detail.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function failedInspection(detail: UnresolvedDetail): HandlerInspection {
+  return { query: [], body: [], unresolved: [detail.message], unresolvedDetails: [detail] };
+}
+
+function appendUnresolved(inspection: HandlerInspection, additions: UnresolvedDetail[]): HandlerInspection {
+  const details = uniqueUnresolved([...(inspection.unresolvedDetails ?? []), ...additions]);
+  return { ...inspection, unresolved: details.map((detail) => detail.message), unresolvedDetails: details };
+}
+
+function inspectHandler(
+  body: FunctionBody,
+  readerShapes: ReaderShape[],
+  structs: Map<string, StructDefinition[]>,
+  functions: Map<string, FunctionBody[]>,
+): HandlerInspection {
   const query = new Set<string>();
   const fields = new Set<string>();
-  const unresolved: string[] = [];
+  const unresolved: UnresolvedDetail[] = [];
+  const visited = new Set<string>();
   const shapeMap = new Map(readerShapes.map((shape) => [shape.call, shape.nameArg]));
-  const contexts = contextNames(body.tokens);
-  for (const call of callsIn(body.tokens)) {
-    const nameArg = readerArgumentIndex(call.name, readerShapes, contexts);
-    if (nameArg !== undefined) {
-      const argument = call.args[nameArg];
-      if (argument?.length === 1 && argument[0]!.kind === "string") query.add(argument[0]!.value);
-      else unresolved.push(`${body.file.relative}:${call.line} query reader '${call.name}' uses a computed field name`);
-    }
-    const shortName = call.name.split(".").at(-1);
-    const receiver = call.name.split(".")[0];
-    const contextBind = receiver !== undefined && contexts.has(receiver) && shortName?.includes("Bind");
-    const bodyBind = contextBind && ["ShouldBindJSON", "BindJSON", "ShouldBindWith"].includes(shortName ?? "");
-    const queryBind = contextBind && ["ShouldBindQuery", "BindQuery"].includes(shortName ?? "");
-    if (bodyBind || queryBind) {
-      const argument = call.args[0] ?? [];
-      const ampersand = argument.findIndex((token) => token.value === "&");
-      const variable = argument[ampersand + 1];
-      if (variable?.kind === "identifier") {
-        const result = bindingFields(body, variable.value, structs, queryBind ? "form" : "json");
-        for (const field of result.fields) (queryBind ? query : fields).add(field);
-        if (!result.resolved) unresolved.push(`${body.file.relative}:${call.line} bind target '${variable.value}' cannot be resolved`);
-      } else unresolved.push(`${body.file.relative}:${call.line} bind target is computed; cannot analyze`);
-    } else if (contextBind) {
-      // Generic, URI, and future bind variants are deliberately unresolved:
-      // guessing their location would turn an unsupported read into false assurance.
-      unresolved.push(`${body.file.relative}:${call.line} bind shape '${call.name}' is not modeled`);
-    }
-    if (nameArg === undefined && !shapeMap.has(call.name) && !contextBind) {
+
+  const inspect = (current: FunctionBody, depth: number): void => {
+    const visitKey = `${current.file.relative}:${current.line}`;
+    if (visited.has(visitKey)) return;
+    visited.add(visitKey);
+    const contexts = contextNames(current.tokens);
+
+    for (const call of callsIn(current.tokens)) {
+      const nameArg = readerArgumentIndex(call.name, readerShapes, contexts);
+      if (nameArg !== undefined) {
+        const argument = call.args[nameArg];
+        if (argument?.length === 1 && argument[0]!.kind === "string") query.add(argument[0]!.value);
+        else unresolved.push(unresolvedAt(current.file.relative, call.line, `query reader '${call.name}' uses a computed field name`));
+      }
+      const shortName = call.name.split(".").at(-1);
+      const receiver = call.name.split(".")[0];
+      const contextBind = receiver !== undefined && contexts.has(receiver) && shortName?.includes("Bind");
+      const bodyBind = contextBind && ["ShouldBindJSON", "BindJSON", "ShouldBindWith"].includes(shortName ?? "");
+      const queryBind = contextBind && ["ShouldBindQuery", "BindQuery"].includes(shortName ?? "");
+      if (bodyBind || queryBind) {
+        const argument = call.args[0] ?? [];
+        const ampersand = argument.findIndex((token) => token.value === "&");
+        const variable = argument[ampersand + 1];
+        if (variable?.kind === "identifier") {
+          const result = bindingFields(current, variable.value, structs, queryBind ? "form" : "json");
+          for (const field of result.fields) (queryBind ? query : fields).add(field);
+          if (!result.resolved) unresolved.push(unresolvedAt(current.file.relative, call.line, `bind target '${variable.value}' cannot be resolved`));
+        } else unresolved.push(unresolvedAt(current.file.relative, call.line, "bind target is computed; cannot analyze"));
+      } else if (contextBind) {
+        // Generic, URI, and future bind variants are deliberately unresolved:
+        // guessing their location would turn an unsupported read into false assurance.
+        unresolved.push(unresolvedAt(current.file.relative, call.line, `bind shape '${call.name}' is not modeled`));
+      }
+
       const takesContext = call.args.some((argument) => argument.length === 1 && contexts.has(argument[0]!.value));
+      if (nameArg !== undefined || shapeMap.has(call.name) || contextBind || !takesContext) continue;
       const literal = call.args.find((argument) => argument.length === 1 && argument[0]!.kind === "string")?.[0];
-      if (takesContext && literal) unresolved.push(`${body.file.relative}:${call.line} possible unconfigured query reader '${call.name}' for '${literal.value}'`);
+      if (call.name.includes(".")) {
+        if (literal) unresolved.push(unresolvedAt(current.file.relative, call.line, `possible unconfigured query reader '${call.name}' for '${literal.value}'`));
+        continue;
+      }
+
+      const candidates = (functions.get(call.name) ?? []).filter((candidate) => path.dirname(candidate.file.relative) === path.dirname(current.file.relative));
+      if (candidates.length !== 1) {
+        const reason = !candidates.length && literal
+          ? `possible unconfigured query reader '${call.name}' for '${literal.value}'`
+          : candidates.length
+          ? `context helper '${call.name}' is ambiguous in this package; query reads may be hidden`
+          : `context helper '${call.name}' cannot be resolved in this package; query reads may be hidden`;
+        unresolved.push(unresolvedAt(current.file.relative, call.line, reason));
+        continue;
+      }
+      const helper = candidates[0]!;
+      if (!contextNames(helper.tokens).size) {
+        unresolved.push(unresolvedAt(current.file.relative, call.line, `context helper '${call.name}' does not declare *gin.Context; query reads may be hidden`));
+        continue;
+      }
+      if (depth >= MAX_CONTEXT_HELPER_DEPTH) {
+        unresolved.push(unresolvedAt(current.file.relative, call.line, `context helper traversal exceeds depth ${MAX_CONTEXT_HELPER_DEPTH} at '${call.name}'; query reads may be hidden`));
+        continue;
+      }
+      inspect(helper, depth + 1);
     }
-  }
-  return { query: [...query].sort(), body: [...fields].sort(), unresolved: [...new Set(unresolved)] };
+  };
+
+  inspect(body, 0);
+  const details = uniqueUnresolved(unresolved);
+  return { query: [...query].sort(), body: [...fields].sort(), unresolved: details.map((detail) => detail.message), unresolvedDetails: details };
 }
 
 function handlerFromArgument(argument: Token[], functions: Map<string, FunctionBody[]>, file: ParsedFile): FunctionBody | undefined {
@@ -302,7 +369,7 @@ function union(left: string[], right: string[]): string[] {
   return [...new Set([...left, ...right])].sort();
 }
 
-function groupAssignmentAt(tokens: Token[], index: number): GroupAssignment | undefined {
+function groupAssignmentAt(tokens: Token[], index: number, scope: number): GroupAssignment | undefined {
   const variable = tokens[index];
   if (variable?.kind !== "identifier" || tokens[index + 1]?.value !== ":=") return undefined;
   // Group calls are syntactically adjacent to the assignment. Keeping this scan
@@ -317,6 +384,7 @@ function groupAssignmentAt(tokens: Token[], index: number): GroupAssignment | un
       receiver: call.name.slice(0, -".Group".length),
       route: call.args[0][0]!.value,
       line: variable.line,
+      scope,
     };
   }
   return undefined;
@@ -348,11 +416,17 @@ export class GoGinAdapter implements ServerAdapter {
         const lexicalScopes: Array<Map<string, GroupDefinition | undefined>> = [];
         const assignments = new Map<number, GroupAssignment>();
         const assignmentCounts = new Map<string, number>();
+        const scanScopes: number[] = [];
+        let nextScope = 0;
         for (let index = 0; index < scope.tokens.length; index += 1) {
-          const assignment = groupAssignmentAt(scope.tokens, index);
+          const token = scope.tokens[index]!;
+          if (token.value === "{") { scanScopes.push(nextScope); nextScope += 1; continue; }
+          if (token.value === "}") { scanScopes.pop(); continue; }
+          const assignment = groupAssignmentAt(scope.tokens, index, scanScopes.at(-1) ?? -1);
           if (!assignment) continue;
           assignments.set(index, assignment);
-          assignmentCounts.set(assignment.variable, (assignmentCounts.get(assignment.variable) ?? 0) + 1);
+          const assignmentKey = `${assignment.scope}:${assignment.variable}`;
+          assignmentCounts.set(assignmentKey, (assignmentCounts.get(assignmentKey) ?? 0) + 1);
         }
 
         for (let index = 0; index < scope.tokens.length; index += 1) {
@@ -372,8 +446,8 @@ export class GoGinAdapter implements ServerAdapter {
           if (assignment) {
             const parent = groups.get(assignment.receiver);
             const unresolved = [...(parent?.unresolved ?? [])];
-            const count = assignmentCounts.get(assignment.variable) ?? 0;
-            if (count > 1) unresolved.push(`${file.relative}:${assignment.line} router group variable '${assignment.variable}' is assigned ${count} times in one function; block shadowing cannot be resolved`);
+            const count = assignmentCounts.get(`${assignment.scope}:${assignment.variable}`) ?? 0;
+            if (count > 1) unresolved.push(unresolvedAt(file.relative, assignment.line, `router group variable '${assignment.variable}' is assigned ${count} times in one lexical block; shadowing cannot be resolved`));
             const lexicalScope = lexicalScopes.at(-1);
             if (lexicalScope && !lexicalScope.has(assignment.variable)) lexicalScope.set(assignment.variable, groups.get(assignment.variable));
             groups.set(assignment.variable, { prefix: concatenate(parent?.prefix ?? "", assignment.route), unresolved });
@@ -391,8 +465,12 @@ export class GoGinAdapter implements ServerAdapter {
           // handler. Resolving that position fails closed instead of inspecting middleware.
           const handler = handlerFromArgument(call.args.at(-1) ?? [], functions, file);
           const site: Site = { file: file.relative, line: call.line };
-          const inspected = handler ? inspectHandler(handler, readerShapes, structs) : { query: [], body: [], unresolved: [`${file.relative}:${call.line} route handler cannot be resolved`] };
-          inspected.unresolved.push(...(group?.unresolved ?? []));
+          const inspected = appendUnresolved(
+            handler
+              ? inspectHandler(handler, readerShapes, structs, functions)
+              : failedInspection(unresolvedAt(file.relative, call.line, "route handler cannot be resolved")),
+            group?.unresolved ?? [],
+          );
           const endpointKey = `${method} ${route}`;
           const handlerSite = handler ? { file: handler.file.relative, line: handler.line } : site;
           const extracted: ReadSet = { method, route, ...inspected, site: handlerSite };
@@ -402,11 +480,14 @@ export class GoGinAdapter implements ServerAdapter {
             // branches. Union can hide a branch-specific miss (a false negative), but
             // intersection makes every fallback handler create floods of false positives.
             // Keep the unresolved note so callers still see that branch parity is unknown.
+            const duplicate = unresolvedAt(file.relative, call.line, "duplicate route registration cannot be disambiguated");
+            const unresolvedDetails = uniqueUnresolved([...(existing.unresolvedDetails ?? []), ...(extracted.unresolvedDetails ?? []), duplicate]);
             results.set(endpointKey, {
               ...existing,
               query: union(existing.query, extracted.query),
               body: union(existing.body, extracted.body),
-              unresolved: [...new Set([...existing.unresolved, ...extracted.unresolved, `${file.relative}:${call.line} duplicate route registration cannot be disambiguated`])],
+              unresolved: unresolvedDetails.map((detail) => detail.message),
+              unresolvedDetails,
               sites: [...(existing.sites ?? [existing.site]), ...(extracted.sites ?? [extracted.site])],
             });
           } else results.set(endpointKey, extracted);
@@ -422,14 +503,15 @@ export class GoGinAdapter implements ServerAdapter {
       const file = files.find((candidate) => candidate.relative === relative.replaceAll("\\", "/"));
       if (!file) {
         const site = { file: relative, line: 1 };
-        results.set(`${method} ${route}`, { method, route, query: [], body: [], unresolved: [`${relative}:1 route override file not found`], site });
+        const detail = unresolvedAt(relative, 1, "route override file not found");
+        results.set(`${method} ${route}`, { method, route, ...failedInspection(detail), site });
         continue;
       }
       const bodies = [...(functionsByFile.get(file.absolute)?.values() ?? [])];
       const body = bodies.length === 1 ? bodies[0] : undefined;
       const inspected = body
-        ? inspectHandler(body, readerShapes, structs)
-        : { query: [], body: [], unresolved: [`${file.relative}:1 route override file has ${bodies.length} functions; handler cannot be disambiguated`] };
+        ? inspectHandler(body, readerShapes, structs, functions)
+        : failedInspection(unresolvedAt(file.relative, 1, `route override file has ${bodies.length} functions; handler cannot be disambiguated`));
       const site = { file: file.relative, line: body?.line ?? 1 };
       results.set(`${method} ${route}`, { method, route, ...inspected, site });
     }
