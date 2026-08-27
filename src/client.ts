@@ -6,7 +6,8 @@ import { ConfigError } from "./config.js";
 import type { ClientConfig, SendSet, Site } from "./types.js";
 
 type Segment = { kind: "text"; value: string } | { kind: "expression"; value: ts.Expression };
-type UrlAnalysis = { route?: string; query: Set<string>; queryExpressions: ts.Expression[]; reasons: string[] };
+type UrlAnalysis = { routes?: string[]; query: Set<string>; queryExpressions: ts.Expression[]; reasons: string[] };
+type PathExpression = { kind: "literals"; values: string[] } | { kind: "parameter" } | { kind: "unresolved" };
 
 function siteFor(node: ts.Node, root: string): Site {
   const source = node.getSourceFile();
@@ -109,7 +110,9 @@ function expressionSegments(expression: ts.Expression, checker: Checker, seen = 
   if (ts.isTemplateExpression(expression)) {
     const result: Segment[] = [{ kind: "text", value: expression.head.text }];
     for (const span of expression.templateSpans) {
-      result.push({ kind: "expression", value: span.expression });
+      const nested = expressionSegments(span.expression, checker, new Set(seen));
+      const contributesPath = nested?.some((segment) => segment.kind === "text" && segment.value.includes("/"));
+      result.push(...(contributesPath ? nested! : [{ kind: "expression" as const, value: span.expression }]));
       result.push({ kind: "text", value: span.literal.text });
     }
     return result;
@@ -129,6 +132,21 @@ function expressionSegments(expression: ts.Expression, checker: Checker, seen = 
   return [{ kind: "expression", value: expression }];
 }
 
+function pathExpression(expression: ts.Expression, checker: Checker): PathExpression {
+  const type = checker.getTypeAtLocation(expression);
+  if (!type) return { kind: "unresolved" };
+  if (type.isStringLiteralType()) return { kind: "parameter" };
+  if (!type.isUnionType()) return { kind: "parameter" };
+  const members = type.getTypes();
+  const values: string[] = [];
+  for (const member of members) {
+    if (!member.isStringLiteralType()) return { kind: "unresolved" };
+    values.push(member.value);
+  }
+  if (!values.length) return { kind: "unresolved" };
+  return { kind: "literals", values: [...new Set(values)].sort() };
+}
+
 function addLiteralQuery(text: string, result: Set<string>): void {
   for (const piece of text.split("&")) {
     const raw = piece.split("=", 1)[0]?.trim();
@@ -145,8 +163,9 @@ function analyzeUrl(expression: ts.Expression, checker: Checker): UrlAnalysis {
     output.reasons.push("URL is a computed value; cannot analyze");
     return output;
   }
-  let route = "";
+  let routes = [""];
   let pathStarted = false;
+  let pathUnresolved = false;
   let queryStarted = false;
   let queryTail = "";
   for (const segment of segments) {
@@ -155,7 +174,15 @@ function analyzeUrl(expression: ts.Expression, checker: Checker): UrlAnalysis {
         if (!queryTail) output.queryExpressions.push(segment.value);
         else if (!queryTail.includes("=")) output.reasons.push("query string uses a computed field name");
       }
-      else if (pathStarted) route += "/:param".replace("//", "/");
+      else if (pathStarted && !pathUnresolved) {
+        const path = pathExpression(segment.value, checker);
+        if (path.kind === "literals") routes = routes.flatMap((route) => path.values.map((value) => `${route}${value}`));
+        else if (path.kind === "parameter") routes = routes.map((route) => `${route}/:param`.replace("//", "/"));
+        else {
+          pathUnresolved = true;
+          output.reasons.push("path segment has a non-finite union type; cannot analyze route");
+        }
+      }
       continue;
     }
     let text = segment.value;
@@ -173,7 +200,7 @@ function analyzeUrl(expression: ts.Expression, checker: Checker): UrlAnalysis {
     }
     const question = text.indexOf("?");
     if (!queryStarted && question >= 0) {
-      route += text.slice(0, question);
+      routes = routes.map((route) => route + text.slice(0, question));
       queryStarted = true;
       const queryText = text.slice(question + 1);
       addLiteralQuery(queryText, output.query);
@@ -182,11 +209,10 @@ function analyzeUrl(expression: ts.Expression, checker: Checker): UrlAnalysis {
       addLiteralQuery(text, output.query);
       queryTail = text.includes("&") ? text.split("&").at(-1) ?? "" : `${queryTail}${text}`;
     }
-    else route += text;
+    else routes = routes.map((route) => route + text);
   }
-  route = route.replace(/\/{2,}/g, "/").replace(/\/$/, "") || "/";
   if (!pathStarted) output.reasons.push("URL route is a computed value; cannot analyze");
-  else output.route = route;
+  else if (!pathUnresolved) output.routes = [...new Set(routes.map((route) => route.replace(/\/{2,}/g, "/").replace(/\/$/, "") || "/"))];
   return output;
 }
 
@@ -358,7 +384,7 @@ function namedOption(object: ts.ObjectLiteralExpression, name: string): ts.Expre
   return undefined;
 }
 
-function analyzeCall(call: ts.CallExpression, checker: Checker, root: string): SendSet {
+function analyzeCall(call: ts.CallExpression, checker: Checker, root: string): SendSet[] {
   const site = siteFor(call, root);
   const unresolved: string[] = [];
   const urlArg = call.arguments[0];
@@ -389,14 +415,14 @@ function analyzeCall(call: ts.CallExpression, checker: Checker, root: string): S
     for (const field of result.fields) query.add(field);
     unresolved.push(...result.reasons);
   }
-  return {
+  return (url.routes?.length ? url.routes : ["<unresolved>"]).map((route) => ({
     method,
-    route: url.route ?? "<unresolved>",
+    route,
     query: [...query].sort(),
     body: [...body].sort(),
     unresolved: [...new Set(unresolved)],
     site,
-  };
+  }));
 }
 
 export function extractClient(config: ClientConfig, configDirectory: string): SendSet[] {
@@ -426,7 +452,7 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && isConfiguredCall(node.expression, checker, wrappers)) {
         const callee = rootCalleeName(node.expression, checker);
-        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(analyzeCall(node, checker, root));
+        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(...analyzeCall(node, checker, root));
       }
       node.forEachChild(visit);
     };

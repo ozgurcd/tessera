@@ -12,6 +12,12 @@
 - Follow same-package Gin context helpers to a bounded depth, report unresolved
   findings at their true source sites, recognize disjoint router-group scopes,
   and expand the adversarial suite to eighteen fixtures.
+- Preserve locally assigned URL bases, expand finite string-literal path
+  unions, and report non-finite unions as unresolved instead of fabricating a
+  parameterized route; expand the adversarial suite to twenty fixtures.
+- Document that the narrowed Identuum proving count matches the route ledger
+  only in cardinality, not membership or coverage, and cannot justify retiring
+  the existing shell parity gate.
 
 ## 0.1.0 — 2026-08-26
 

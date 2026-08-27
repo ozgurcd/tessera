@@ -29,6 +29,8 @@ const CASES: readonly SelftestCase[] = [
   { directory: "16-linear-group-scan", exitCode: 1, includes: ["POST /api/large", "1 unmatched, 0 unresolved", "body field 'ghost'"], excludes: ["body field 'known'"] },
   { directory: "17-context-helper", exitCode: 1, includes: ["1 unmatched, 0 unresolved", "query field 'ghost'"], excludes: ["query field 'active'", "query field 'deleted'"] },
   { directory: "18-unresolved-provenance", exitCode: 3, includes: ["UNRESOLVED actual.go:5  actual.go:5 bind shape 'c.ShouldBindUri' is not modeled", "0 unmatched, 2 unresolved"], excludes: ["UNRESOLVED fallback.go"] },
+  { directory: "19-local-url-base", exitCode: 0, includes: ["0 unmatched, 0 unresolved, 0 unmapped"], excludes: ["UNMAPPED", "UNRESOLVED"] },
+  { directory: "20-literal-union", exitCode: 1, includes: ["POST /api/v1/service-accounts/:param/disable", "POST /api/v1/service-accounts/:param/enable", "2 unmatched, 1 unresolved, 0 unmapped", "path segment has a non-finite union type"], excludes: ["UNMAPPED", "/api/v1/service-accounts/:param/:param"] },
 ];
 
 export async function runSelftest(): Promise<SelftestResult> {

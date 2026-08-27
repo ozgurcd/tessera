@@ -1,0 +1,1 @@
+{"client":{"tsconfig":"./tsconfig.json","include":["client/**/*.ts"]},"server":{"adapter":"go-gin","root":"./server"},"rules":{"unmapped":"error","unresolved":"error","reverseDirection":false},"allow":[]}

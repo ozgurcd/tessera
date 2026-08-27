@@ -154,8 +154,9 @@ The client extractor creates a TypeScript project from the configured
 resolves real symbols rather than matching identifier text. It supports:
 
 - global `fetch`, aliases of it, and configured wrapper names;
-- static, absolute, and interpolated URLs, with path expressions normalized to
-  `:param`;
+- static, absolute, and interpolated URLs, including locally assigned URL
+  bases; ordinary path expressions normalize to `:param`, while finite unions
+  of string literals expand to their literal routes;
 - literal query strings and `URLSearchParams.set`/`append`, including aliases
   and values passed into local helpers;
 - default `GET` and literal option methods;
@@ -163,8 +164,10 @@ resolves real symbols rather than matching identifier text. It supports:
   property assignments, literal bracket assignments, `Object.assign`, and
   typed spreads.
 
-Computed methods, routes, bodies, and field names produce `UNRESOLVED`. They
-never silently become an empty send set.
+Computed methods, routes, bodies, and field names produce `UNRESOLVED`. A path
+union that is not entirely composed of string literals is unresolved rather
+than collapsed to `:param`. Computed input never silently becomes an empty send
+set.
 
 The `go-gin` adapter parses Go tokens in-process and has no runtime dependency
 on a Go toolchain or third-party parser. It discovers Gin route registrations,
@@ -214,7 +217,8 @@ computed fields, unmapped routes, endpoint scoping, and method discrimination.
 The suite also covers duplicate Gin registrations, middleware chains, bind
 variants, group shadowing, nested struct tags, and large group scans. Every
 fixture asserts both output and process exit code. Context-helper traversal and
-adapter-level unresolved provenance have dedicated fixtures as well.
+adapter-level unresolved provenance have dedicated fixtures as well, as do
+local URL-base composition and finite literal-union routes.
 
 `rules.unresolved` defaults to `"warn"` for an inspectable first adoption.
 Change it to `"error"` before making Tessera a required merge gate. Unmapped
@@ -224,6 +228,15 @@ every intended endpoint is represented.
 Reverse checking is off by default because servers commonly support multiple
 clients. Enable `reverseDirection` only when the configured TypeScript client
 is expected to exercise every server field.
+
+The narrowed Identuum proving configuration recorded 10 unmapped routes on
+2026-08-27, but that count is not route parity and must not be used to retire
+the shell parity gate. The sets differ: Tessera includes
+`sessions/:param/revoke` and `identity-providers`, which are absent from the
+ledger, while the ledger includes `auth/users/setup` and
+`auth/users/setup/:p`, whose call sites are in
+`src/app/invitation/actions.ts` outside that configuration's `client.include`.
+Equal cardinality does not establish equal membership or equivalent coverage.
 
 ## Blind spots
 
