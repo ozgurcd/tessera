@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Add the `go-nethttp` adapter: `HandleFunc`/`Handle` registrations with literal or
+  string-constant patterns, Go 1.22 `METHOD /path` patterns and `{wildcard}`
+  segments. Routes only; handler fields are not modeled, so fields sent to these
+  endpoints are reported as unresolved. Method-less patterns serve every method.
+- Resolve `fetch(OBJ.member)` when `OBJ` is a `const` object literal (plain or
+  `as const`, nested, same module or imported) and the member is never assigned.
+- Add `client.routePrefixStrip` to remove a proxy mount such as `/api/idp`
+  from client routes before pairing.
+- Accept absolute `client.include` patterns; an empty match now names the patterns.
+- Expand the adversarial suite to twenty-three fixtures.
+
 - Correct the documented request-analysis boundary for path and response data.
 - Scope allow entries to query or body fields.
 - Deduplicate findings in linear time and retain all endpoint source sites.

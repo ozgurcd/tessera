@@ -3,7 +3,7 @@ import path from "node:path";
 import { API, SymbolFlags, TypeFlags, type Checker, type Symbol as CompilerSymbol } from "typescript/unstable/sync";
 import * as ts from "typescript/unstable/ast";
 import { ConfigError } from "./config.js";
-import type { ClientConfig, SendSet, Site } from "./types.js";
+import { UNRESOLVED_ROUTE, type ClientConfig, type SendSet, type Site } from "./types.js";
 
 type Segment = { kind: "text"; value: string } | { kind: "expression"; value: ts.Expression };
 type UrlAnalysis = { routes?: string[]; query: Set<string>; queryExpressions: ts.Expression[]; reasons: string[] };
@@ -59,6 +59,56 @@ function initializerOf(expression: ts.Expression, checker: Checker, seen = new S
   const declaration = declarationOf(symbol);
   if (declaration && ts.isVariableDeclaration(declaration) && declaration.initializer) return initializerOf(declaration.initializer, checker, seen);
   return expression;
+}
+
+function isConstDeclaration(node: ts.Node | undefined): boolean {
+  return Boolean(node && ts.isVariableDeclaration(node) && ts.isVariableDeclarationList(node.parent) && node.parent.flags & ts.NodeFlags.Const);
+}
+
+// An object literal is a stable table only when a `const` binding owns it,
+// directly or through nested literals; `as const`, `satisfies`, and parentheses are transparent.
+function ownedByConst(literal: ts.ObjectLiteralExpression): boolean {
+  let node: ts.Node = literal;
+  while (true) {
+    let parent: ts.Node | undefined = node.parent;
+    while (parent && (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent) || ts.isSatisfiesExpression(parent) || ts.isTypeAssertion(parent))) parent = parent.parent;
+    if (!parent) return false;
+    if (ts.isPropertyAssignment(parent) && ts.isObjectLiteralExpression(parent.parent)) node = parent.parent;
+    else return isConstDeclaration(parent) && (parent as ts.VariableDeclaration).initializer !== undefined;
+  }
+}
+
+function isAssignmentTarget(node: ts.Node): boolean {
+  const parent = node.parent;
+  if (!parent) return false;
+  if (ts.isBinaryExpression(parent) && parent.left === node) return parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+  if (ts.isPrefixUnaryExpression(parent) || ts.isPostfixUnaryExpression(parent)) return parent.operator === ts.SyntaxKind.PlusPlusToken || parent.operator === ts.SyntaxKind.MinusMinusToken;
+  return ts.isDeleteExpression(parent);
+}
+
+// Mutation is looked for in the file that uses the member and in the file that declares it.
+function isMutated(symbol: CompilerSymbol, files: ts.SourceFile[], checker: Checker): boolean {
+  let mutated = false;
+  const visit = (node: ts.Node): void => {
+    if (mutated) return;
+    if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && isAssignmentTarget(node)) {
+      const target = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
+      if (target && checker.getSymbolAtLocation(target) === symbol) { mutated = true; return; }
+    }
+    node.forEachChild(visit);
+  };
+  for (const file of files) visit(file);
+  return mutated;
+}
+
+function constObjectMember(expression: ts.PropertyAccessExpression | ts.ElementAccessExpression, checker: Checker): ts.Expression | undefined {
+  const name = ts.isPropertyAccessExpression(expression) ? expression.name : expression.argumentExpression;
+  if (!name || (!ts.isIdentifier(name) && !ts.isStringLiteralLikeNode(name))) return undefined;
+  const symbol = checker.getSymbolAtLocation(name);
+  const declaration = symbol && declarationOf(symbol);
+  if (!symbol || !declaration || !ts.isPropertyAssignment(declaration) || !ts.isObjectLiteralExpression(declaration.parent) || !ownedByConst(declaration.parent)) return undefined;
+  const files = [...new Set([expression.getSourceFile(), declaration.getSourceFile()])];
+  return isMutated(symbol, files, checker) ? undefined : declaration.initializer;
 }
 
 function symbolAt(expression: ts.Expression, checker: Checker): CompilerSymbol | undefined {
@@ -122,6 +172,10 @@ function expressionSegments(expression: ts.Expression, checker: Checker, seen = 
     const right = expressionSegments(expression.right, checker, seen);
     return left && right ? [...left, ...right] : undefined;
   }
+  if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+    const member = constObjectMember(expression, checker);
+    if (member) return expressionSegments(member, checker, seen);
+  }
   if (ts.isIdentifier(expression)) {
     const symbol = symbolAt(expression, checker);
     if (!symbol || seen.has(symbol)) return undefined;
@@ -145,6 +199,11 @@ function pathExpression(expression: ts.Expression, checker: Checker): PathExpres
   }
   if (!values.length) return { kind: "unresolved" };
   return { kind: "literals", values: [...new Set(values)].sort() };
+}
+
+function stripRoutePrefix(route: string, prefixes: readonly string[]): string {
+  const prefix = prefixes.find((candidate) => route === candidate || route.startsWith(`${candidate}/`));
+  return prefix === undefined ? route : route.slice(prefix.length) || "/";
 }
 
 function addLiteralQuery(text: string, result: Set<string>): void {
@@ -384,7 +443,7 @@ function namedOption(object: ts.ObjectLiteralExpression, name: string): ts.Expre
   return undefined;
 }
 
-function analyzeCall(call: ts.CallExpression, checker: Checker, root: string): SendSet[] {
+function analyzeCall(call: ts.CallExpression, checker: Checker, root: string, prefixes: readonly string[]): SendSet[] {
   const site = siteFor(call, root);
   const unresolved: string[] = [];
   const urlArg = call.arguments[0];
@@ -415,7 +474,7 @@ function analyzeCall(call: ts.CallExpression, checker: Checker, root: string): S
     for (const field of result.fields) query.add(field);
     unresolved.push(...result.reasons);
   }
-  return (url.routes?.length ? url.routes : ["<unresolved>"]).map((route) => ({
+  return (url.routes?.length ? url.routes.map((route) => stripRoutePrefix(route, prefixes)) : [UNRESOLVED_ROUTE]).map((route) => ({
     method,
     route,
     query: [...query].sort(),
@@ -430,21 +489,25 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
   if (!fs.existsSync(tsconfigPath)) throw new ConfigError(`tsconfig not found: ${config.tsconfig}`);
   const api = new API({ cwd: path.dirname(tsconfigPath) });
   const parsed = api.parseConfigFile(tsconfigPath);
-  const patterns = config.include?.map(globRegex);
+  // An absolute include pattern is matched against the file's absolute path; any other is relative to the configuration file.
+  const patterns = config.include?.map((pattern) => ({ regex: globRegex(pattern), absolute: path.isAbsolute(pattern) }));
   const root = configDirectory;
   const files = parsed.fileNames.filter((file) => {
     if (file.endsWith(".d.ts")) return false;
     if (!patterns?.length) return true;
     const relative = path.relative(root, file).replaceAll(path.sep, "/");
-    return patterns.some((pattern) => pattern.test(relative));
+    const absolute = file.replaceAll(path.sep, "/");
+    return patterns.some((pattern) => pattern.regex.test(pattern.absolute ? absolute : relative));
   });
-  if (!files.length) { api.close(); throw new ConfigError("client.include matched no TypeScript source files"); }
+  if (!files.length) { api.close(); throw new ConfigError(`client.include matched no TypeScript source files (patterns: ${(config.include ?? []).join(", ") || "none"}; searched ${parsed.fileNames.length} files from ${config.tsconfig})`); }
   const snapshot = api.updateSnapshot({ openProjects: [tsconfigPath] });
   const project = snapshot.getProject(tsconfigPath) ?? snapshot.getProjects().find((item) => path.resolve(item.configFileName) === tsconfigPath);
   if (!project) { api.close(); throw new ConfigError(`TypeScript could not load project: ${config.tsconfig}`); }
   const program = project.program;
   const checker = project.checker;
   const wrappers = new Set(config.fetchWrappers ?? []);
+  // Longest first so a nested mount such as /api/idp wins over /api.
+  const prefixes = [...(config.routePrefixStrip ?? [])].sort((a, b) => b.length - a.length);
   const sends: SendSet[] = [];
   for (const fileName of files) {
     const source = program.getSourceFile(fileName);
@@ -452,7 +515,7 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && isConfiguredCall(node.expression, checker, wrappers)) {
         const callee = rootCalleeName(node.expression, checker);
-        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(...analyzeCall(node, checker, root));
+        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(...analyzeCall(node, checker, root, prefixes));
       }
       node.forEachChild(visit);
     };

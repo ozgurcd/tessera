@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { GoGinAdapter } from "./go-gin.js";
+import { adapterFor } from "./adapters.js";
 import { match } from "./matcher.js";
 import { humanResult } from "./report.js";
 
@@ -31,6 +31,9 @@ const CASES: readonly SelftestCase[] = [
   { directory: "18-unresolved-provenance", exitCode: 3, includes: ["UNRESOLVED actual.go:5  actual.go:5 bind shape 'c.ShouldBindUri' is not modeled", "0 unmatched, 2 unresolved"], excludes: ["UNRESOLVED fallback.go"] },
   { directory: "19-local-url-base", exitCode: 0, includes: ["0 unmatched, 0 unresolved, 0 unmapped"], excludes: ["UNMAPPED", "UNRESOLVED"] },
   { directory: "20-literal-union", exitCode: 1, includes: ["POST /api/v1/service-accounts/:param/disable", "POST /api/v1/service-accounts/:param/enable", "2 unmatched, 1 unresolved, 0 unmapped", "path segment has a non-finite union type"], excludes: ["UNMAPPED", "/api/v1/service-accounts/:param/:param"] },
+  { directory: "21-nethttp", exitCode: 0, includes: ["0 unmatched, 1 unresolved, 2 unmapped", "UNMAPPED   POST /healthz", "UNMAPPED   GET /api/missing", "net/http handler fields are not analyzed"], excludes: ["UNMATCHED", "UNMAPPED   GET /api/v1/items", "UNMAPPED   DELETE", "UNMAPPED   GET /api/setup/status", "UNMAPPED   POST /api/setup/status", "UNMAPPED   GET /api/files", "UNMAPPED   GET /healthz"] },
+  { directory: "22-const-object", exitCode: 1, includes: ["2 unmatched, 1 unresolved, 0 unmapped", "GET /api/v1/search  query field 'ghost'", "POST /api/v1/widgets  body field 'ghost_body'", "URL route is a computed value"], excludes: ["UNMAPPED", "field 'limit'", "field 'page'", "field 'name'"] },
+  { directory: "23-route-prefix-strip", exitCode: 1, includes: ["1 unmatched, 0 unresolved, 1 unmapped", "GET /api/v1/items  query field 'ghost'", "UNMAPPED   GET /api/idpx/api/v1/items"], excludes: ["/api/idp/api", "field 'limit'"] },
 ];
 
 export async function runSelftest(): Promise<SelftestResult> {
@@ -42,7 +45,7 @@ export async function runSelftest(): Promise<SelftestResult> {
       const configPath = path.join(fixtureRoot, fixture.directory, "tessera.config.json");
       const loaded = loadConfig(configPath);
       const sends = extractClient(loaded.config.client, loaded.directory);
-      const reads = await new GoGinAdapter().extract(loaded.config.server, loaded.directory);
+      const reads = await adapterFor(loaded.config.server.adapter).extract(loaded.config.server, loaded.directory);
       const result = match(sends, reads, loaded.config.rules, loaded.config.allow);
       const output = humanResult(result);
       const missing = fixture.includes.filter((text) => !output.includes(text));

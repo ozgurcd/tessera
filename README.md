@@ -87,7 +87,8 @@ A complete configuration looks like this:
   "client": {
     "tsconfig": "./tsconfig.json",
     "include": ["src/lib/**/*.ts"],
-    "fetchWrappers": ["apiFetch", "authedFetch"]
+    "fetchWrappers": ["apiFetch", "authedFetch"],
+    "routePrefixStrip": ["/api/idp"]
   },
   "server": {
     "adapter": "go-gin",
@@ -118,6 +119,13 @@ A complete configuration looks like this:
 }
 ```
 
+`client.include` patterns are relative to the configuration file; an absolute
+pattern is matched against the file's absolute path. `client.routePrefixStrip`
+lists path prefixes (a UI proxy mount, for example) removed from client routes,
+on a segment boundary and longest first, before they are paired with server routes.
+
+`server.adapter` is `go-gin` or `go-nethttp`.
+
 Every allow entry requires a query/body location and a reason, preventing an
 exception for one part of a request from silently allowing the same field name
 in another. Relative paths are resolved from the configuration file. JSON with
@@ -130,7 +138,7 @@ tessera init                 write a starter config and detect tsconfig
 tessera check                compare all mapped endpoints (the CI command)
 tessera list                 print both extracted halves
 tessera explain <route>      show sent and read fields side by side
-tessera selftest             run the eighteen bundled known-good/known-bad fixtures
+tessera selftest             run the twenty-three bundled known-good/known-bad fixtures
 ```
 
 All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
@@ -195,6 +203,21 @@ branch-specific parity cannot be proven.
 Router-group variables follow function and lexical brace scopes. Reusing a
 name such as `g` in disjoint `if`/`else` blocks is modeled without a warning;
 multiple declarations in the same lexical block remain unresolved.
+
+The `go-nethttp` adapter finds `X.HandleFunc(pattern, h)` and `X.Handle(pattern, h)`
+calls whose pattern is a string literal or a string `const` expression (resolved
+across the tree; an ambiguous name is reported as unresolved). Patterns follow
+Go 1.22: `GET /items/{id}` is method-specific, a pattern without a method serves
+every method, `{id}` and `{id...}` become `:param`, `{$}` ends the path, and a
+trailing-slash subtree such as `/files/` is modeled as `/files/:param` (one
+segment). It maps routes only: handler fields are not read, so fields a client
+sends to such an endpoint produce `UNRESOLVED` instead of a false assurance or a
+false `UNMATCHED`. Unresolvable patterns are always reported.
+
+Property access on a `const` object literal (`PATHS.status`, nested or imported,
+plain or `as const`) resolves to the member's initializer. Objects bound with
+`let`/`var`, built by calls or spreads, or with the member assigned anywhere in
+the using or declaring file stay unresolved; mutation in a third file is not seen.
 
 This choice keeps the npm package portable. The adapter is isolated behind the
 exported `ServerAdapter` interface so another server implementation does not

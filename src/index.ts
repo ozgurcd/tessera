@@ -1,6 +1,6 @@
 import { extractClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { GoGinAdapter } from "./go-gin.js";
+import { adapterFor } from "./adapters.js";
 import { match } from "./matcher.js";
 import type { CheckResult, ReadSet, SendSet, TesseraConfig } from "./types.js";
 
@@ -8,11 +8,12 @@ export * from "./types.js";
 export { ConfigError, loadConfig } from "./config.js";
 export { extractClient } from "./client.js";
 export { GoGinAdapter } from "./go-gin.js";
+export { GoNetHttpAdapter } from "./go-nethttp.js";
 export { match } from "./matcher.js";
 
 export async function extract(config: TesseraConfig, configDirectory = process.cwd()): Promise<{ sends: SendSet[]; reads: ReadSet[] }> {
   const sends = extractClient(config.client, configDirectory);
-  const reads = await new GoGinAdapter().extract(config.server, configDirectory);
+  const reads = await adapterFor(config.server.adapter).extract(config.server, configDirectory);
   return { sends, reads };
 }
 

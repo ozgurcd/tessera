@@ -3,10 +3,10 @@ import path from "node:path";
 import { ConfigError } from "./config.js";
 import type { ReadSet, ReaderShape, ServerAdapter, ServerConfig, Site, UnresolvedDetail } from "./types.js";
 
-type Token = { value: string; kind: "identifier" | "string" | "symbol"; line: number };
+export type Token = { value: string; kind: "identifier" | "string" | "symbol"; line: number };
 type ParsedFile = { absolute: string; relative: string; tokens: Token[] };
 type FunctionBody = { file: ParsedFile; tokens: Token[]; line: number };
-type Call = { name: string; args: Token[][]; start: number; end: number; line: number };
+export type Call = { name: string; args: Token[][]; start: number; end: number; line: number };
 type StructDefinition = { file: string; tokens: Token[] };
 type GroupDefinition = { prefix: string; unresolved: UnresolvedDetail[] };
 type GroupAssignment = { variable: string; receiver: string; route: string; line: number; scope: number };
@@ -24,7 +24,7 @@ const DEFAULT_READERS: ReaderShape[] = [
   { call: "c.GetQueryArray", nameArg: 0 },
 ];
 
-function walk(directory: string): string[] {
+export function walk(directory: string): string[] {
   const result: string[] = [];
   if (!fs.existsSync(directory)) return result;
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
@@ -36,7 +36,7 @@ function walk(directory: string): string[] {
   return result;
 }
 
-function tokenize(input: string): Token[] {
+export function tokenize(input: string): Token[] {
   const tokens: Token[] = [];
   let line = 1;
   for (let index = 0; index < input.length;) {
@@ -97,7 +97,7 @@ function tokenize(input: string): Token[] {
   return tokens;
 }
 
-function closing(tokens: Token[], start: number, open = "(", close = ")"): number | undefined {
+export function closing(tokens: Token[], start: number, open = "(", close = ")"): number | undefined {
   let depth = 0;
   for (let index = start; index < tokens.length; index += 1) {
     if (tokens[index]!.value === open) depth += 1;
@@ -109,7 +109,7 @@ function closing(tokens: Token[], start: number, open = "(", close = ")"): numbe
   return undefined;
 }
 
-function splitArgs(tokens: Token[], start: number, end: number): Token[][] {
+export function splitArgs(tokens: Token[], start: number, end: number): Token[][] {
   const result: Token[][] = [];
   let current: Token[] = [];
   let depth = 0;
@@ -124,7 +124,7 @@ function splitArgs(tokens: Token[], start: number, end: number): Token[][] {
   return result;
 }
 
-function callAt(tokens: Token[], open: number): Call | undefined {
+export function callAt(tokens: Token[], open: number): Call | undefined {
   if (tokens[open]?.value !== "(") return undefined;
   let start = open - 1;
   if (start < 0 || tokens[start]!.kind !== "identifier") return undefined;
@@ -135,7 +135,7 @@ function callAt(tokens: Token[], open: number): Call | undefined {
   return { name, args: splitArgs(tokens, open + 1, end), start, end, line: tokens[start]!.line };
 }
 
-function callsIn(tokens: Token[]): Call[] {
+export function callsIn(tokens: Token[]): Call[] {
   const result: Call[] = [];
   for (let index = 0; index < tokens.length; index += 1) {
     if (tokens[index]!.value === "(") {
@@ -247,11 +247,11 @@ function readerArgumentIndex(callName: string, shapes: ReaderShape[], contexts: 
   return undefined;
 }
 
-function unresolvedAt(file: string, line: number, message: string): UnresolvedDetail {
+export function unresolvedAt(file: string, line: number, message: string): UnresolvedDetail {
   return { message: `${file}:${line} ${message}`, site: { file, line } };
 }
 
-function uniqueUnresolved(details: UnresolvedDetail[]): UnresolvedDetail[] {
+export function uniqueUnresolved(details: UnresolvedDetail[]): UnresolvedDetail[] {
   const seen = new Set<string>();
   return details.filter((detail) => {
     const key = `${detail.site.file}:${detail.site.line}:${detail.message}`;

@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { extractClient } from "./client.js";
 import { ConfigError, loadConfig, STARTER_CONFIG } from "./config.js";
-import { GoGinAdapter } from "./go-gin.js";
+import { adapterFor } from "./adapters.js";
 import { match } from "./matcher.js";
 import { humanExplain, humanList, humanResult } from "./report.js";
 import { runSelftest } from "./selftest.js";
@@ -71,7 +71,7 @@ function version(): string {
 async function extracted(configPath: string) {
   const loaded = loadConfig(configPath);
   const sends = extractClient(loaded.config.client, loaded.directory);
-  const reads = await new GoGinAdapter().extract(loaded.config.server, loaded.directory);
+  const reads = await adapterFor(loaded.config.server.adapter).extract(loaded.config.server, loaded.directory);
   return { ...loaded, sends, reads };
 }
 

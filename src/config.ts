@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { ADAPTER_NAMES } from "./adapters.js";
 import type { TesseraConfig } from "./types.js";
 
 export class ConfigError extends Error {}
@@ -50,12 +51,15 @@ export function loadConfig(configPath: string): { config: TesseraConfig; directo
   if (!server || typeof server.adapter !== "string" || typeof server.root !== "string") {
     throw new ConfigError("server.adapter and server.root are required");
   }
-  if (server.adapter !== "go-gin") throw new ConfigError(`unknown server adapter '${server.adapter}'`);
-  for (const key of ["include", "fetchWrappers"] as const) {
+  if (!ADAPTER_NAMES.includes(server.adapter)) throw new ConfigError(`unknown server adapter '${server.adapter}' (known: ${ADAPTER_NAMES.join(", ")})`);
+  for (const key of ["include", "fetchWrappers", "routePrefixStrip"] as const) {
     const setting = client[key];
     if (setting !== undefined && (!Array.isArray(setting) || setting.some((item) => typeof item !== "string" || !item))) {
       throw new ConfigError(`client.${key} must be an array of non-empty strings`);
     }
+  }
+  if ((client.routePrefixStrip as string[] | undefined)?.some((prefix) => !prefix.startsWith("/") || prefix.length < 2 || prefix.endsWith("/"))) {
+    throw new ConfigError("client.routePrefixStrip entries must start with '/' and must not end with '/'");
   }
   if (server.readerShapes !== undefined) {
     if (!Array.isArray(server.readerShapes) || server.readerShapes.some((shape) => {

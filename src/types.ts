@@ -1,5 +1,9 @@
 export type Site = { file: string; line: number };
 export type UnresolvedDetail = { message: string; site: Site };
+/** ReadSet.method for a net/http pattern registered without a method. */
+export const ANY_METHOD = "*";
+/** Route of a registration whose pattern could not be resolved; its unresolved details are always reported. */
+export const UNRESOLVED_ROUTE = "<unresolved>";
 export type FieldLocation = "query" | "body";
 
 export type SendSet = {
@@ -22,6 +26,8 @@ export type ReadSet = {
   site: Site;
   /** All handler sites represented by this endpoint; `site` remains for JSON v1 compatibility. */
   sites?: Site[];
+  /** The adapter found the route but does not model handler fields; sent fields are reported as unresolved, never as unmatched. */
+  fieldsUnmodeled?: boolean;
 };
 
 export interface ServerAdapter {
@@ -35,6 +41,8 @@ export type ClientConfig = {
   tsconfig: string;
   include?: string[];
   fetchWrappers?: string[];
+  /** Path prefixes removed from client routes (for example a UI proxy mount) before pairing. */
+  routePrefixStrip?: string[];
 };
 
 export type ServerConfig = {

@@ -13,7 +13,8 @@
       "properties": {
         "tsconfig": { "type": "string", "minLength": 1 },
         "include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "fetchWrappers": { "type": "array", "items": { "type": "string", "minLength": 1 } }
+        "fetchWrappers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "routePrefixStrip": { "type": "array", "items": { "type": "string", "pattern": "^/.*[^/]$" } }
       }
     },
     "server": {
@@ -21,7 +22,7 @@
       "additionalProperties": false,
       "required": ["adapter", "root"],
       "properties": {
-        "adapter": { "const": "go-gin" },
+        "adapter": { "enum": ["go-gin", "go-nethttp"] },
         "root": { "type": "string", "minLength": 1 },
         "readerShapes": {
           "type": "array",

@@ -1,4 +1,4 @@
-import type { AllowEntry, CheckResult, FieldLocation, Finding, ReadSet, RulesConfig, SendSet, Site, UnresolvedDetail } from "./types.js";
+import { ANY_METHOD, UNRESOLVED_ROUTE, type AllowEntry, type CheckResult, type FieldLocation, type Finding, type ReadSet, type RulesConfig, type SendSet, type Site, type UnresolvedDetail } from "./types.js";
 
 function key(method: string, route: string): string {
   return `${method.toUpperCase()} ${route}`;
@@ -42,6 +42,8 @@ function uniqueUnresolved(details: UnresolvedDetail[]): UnresolvedDetail[] {
   });
 }
 
+const UNMODELED_FIELDS_NOTE = "net/http handler fields are not analyzed";
+
 function intersect(left: string[], right: string[]): string[] {
   const values = new Set(right);
   return left.filter((field) => values.has(field));
@@ -68,6 +70,7 @@ function readMapFor(reads: ReadSet[]): Map<string, ReadSet> {
       unresolved: unresolvedDetails.map((detail) => detail.message),
       unresolvedDetails,
       sites: uniqueSites([...readSites(existing), ...readSites(read)]),
+      ...(existing.fieldsUnmodeled || read.fieldsUnmodeled ? { fieldsUnmodeled: true } : {}),
     });
   }
   return result;
@@ -87,6 +90,7 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
   const findings: Finding[] = [];
   const readMap = readMapFor(reads);
   const sendMap = new Map<string, SendSet[]>();
+  const sentRoutes = new Set(sends.map((send) => send.route));
   for (const send of sends) {
     const endpoint = key(send.method, send.route);
     const values = sendMap.get(endpoint) ?? [];
@@ -94,12 +98,17 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     sendMap.set(endpoint, values);
     for (const message of send.unresolved) findings.push({ kind: "unresolved", message, site: send.site });
     if (send.route === "<unresolved>") continue;
-    const read = readMap.get(endpoint);
+    // A method-less net/http pattern serves every method; a method-specific one takes precedence.
+    const read = readMap.get(endpoint) ?? readMap.get(key(ANY_METHOD, send.route));
     if (!read) {
       findings.push({ kind: "unmapped", method: send.method, route: send.route, site: send.site, error: rules.unmapped === "error" });
       continue;
     }
     for (const location of ["query", "body"] as const) {
+      if (read.fieldsUnmodeled) {
+        if (send[location].length) findings.push({ kind: "unresolved", message: `${location} fields [${send[location].join(", ")}] sent to ${send.method} ${send.route} cannot be verified: ${UNMODELED_FIELDS_NOTE} (${readSites(read).map(siteKey).join(", ")})`, site: send.site });
+        continue;
+      }
       const readFields = new Set(read[location]);
       for (const field of send[location]) {
         if (!readFields.has(field) && !allowed(allow, send.method, send.route, location, field)) {
@@ -110,10 +119,12 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     }
   }
   for (const read of readMap.values()) {
-    if (sendMap.has(key(read.method, read.route))) {
+    // An unresolved registration pairs with no client call, so it is reported unconditionally.
+    const paired = read.route === UNRESOLVED_ROUTE || (read.method === ANY_METHOD ? sentRoutes.has(read.route) : sendMap.has(key(read.method, read.route)));
+    if (paired) {
       for (const detail of readUnresolved(read)) findings.push({ kind: "unresolved", message: detail.message, site: detail.site });
     }
-    if (!rules.reverseDirection) continue;
+    if (!rules.reverseDirection || read.fieldsUnmodeled) continue;
     const endpointSends = sendMap.get(key(read.method, read.route));
     if (!endpointSends?.length) continue;
     const sources = readSites(read);
