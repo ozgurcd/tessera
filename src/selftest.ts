@@ -2,7 +2,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { extractClient } from "./client.js";
 import { loadConfig } from "./config.js";
-import { adapterFor } from "./adapters.js";
+import { extractServers } from "./adapters.js";
 import { match } from "./matcher.js";
 import { humanResult } from "./report.js";
 
@@ -34,6 +34,11 @@ const CASES: readonly SelftestCase[] = [
   { directory: "21-nethttp", exitCode: 0, includes: ["0 unmatched, 1 unresolved, 2 unmapped", "UNMAPPED   POST /healthz", "UNMAPPED   GET /api/missing", "net/http handler fields are not analyzed"], excludes: ["UNMATCHED", "UNMAPPED   GET /api/v1/items", "UNMAPPED   DELETE", "UNMAPPED   GET /api/setup/status", "UNMAPPED   POST /api/setup/status", "UNMAPPED   GET /api/files", "UNMAPPED   GET /healthz"] },
   { directory: "22-const-object", exitCode: 1, includes: ["2 unmatched, 1 unresolved, 0 unmapped", "GET /api/v1/search  query field 'ghost'", "POST /api/v1/widgets  body field 'ghost_body'", "URL route is a computed value"], excludes: ["UNMAPPED", "field 'limit'", "field 'page'", "field 'name'"] },
   { directory: "23-route-prefix-strip", exitCode: 1, includes: ["1 unmatched, 0 unresolved, 1 unmapped", "GET /api/v1/items  query field 'ghost'", "UNMAPPED   GET /api/idpx/api/v1/items"], excludes: ["/api/idp/api", "field 'limit'"] },
+  { directory: "24-wrapper-arg", exitCode: 1, includes: ["2 unmatched, 0 unresolved, 0 unmapped", "GET /api/v1/things  query field 'ghost'", "POST /api/v1/things  body field 'ghost_body'"], excludes: ["computed", "field 'limit'", "field 'name'"] },
+  { directory: "25-nonreaders", exitCode: 1, includes: ["1 unmatched, 0 unresolved, 0 unmapped", "query field 'ghost'"], excludes: ["possible unconfigured query reader", "field 'limit'"] },
+  { directory: "26-extra-servers", exitCode: 1, includes: ["1 unmatched, 0 unresolved, 1 unmapped", "GET /ag/api/v1/plan  query field 'ghost'", "UNMAPPED   GET /api/v1/plan"], excludes: ["UNMAPPED   GET /api/v1/things", "UNMAPPED   GET /ag/api/v1/plan", "field 'limit'"] },
+  { directory: "27-const-mutation", exitCode: 0, includes: ["0 unmatched, 2 unresolved, 0 unmapped", "client.ts:9  URL route is a computed value", "client.ts:10  URL route is a computed value"], excludes: ["UNMAPPED", "client.ts:11"] },
+  { directory: "28-subtree-stripprefix", exitCode: 0, includes: ["0 unmatched, 0 unresolved, 1 unmapped", "UNMAPPED   GET /api/v1/ghost"], excludes: ["UNMAPPED   GET /files", "UNMAPPED   GET /api/v1/items", "UNMAPPED   GET /api/v1/status"] },
 ];
 
 export async function runSelftest(): Promise<SelftestResult> {
@@ -45,7 +50,7 @@ export async function runSelftest(): Promise<SelftestResult> {
       const configPath = path.join(fixtureRoot, fixture.directory, "tessera.config.json");
       const loaded = loadConfig(configPath);
       const sends = extractClient(loaded.config.client, loaded.directory);
-      const reads = await adapterFor(loaded.config.server.adapter).extract(loaded.config.server, loaded.directory);
+      const reads = await extractServers(loaded.config.server, loaded.config.extraServers ?? [], loaded.directory);
       const result = match(sends, reads, loaded.config.rules, loaded.config.allow);
       const output = humanResult(result);
       const missing = fixture.includes.filter((text) => !output.includes(text));

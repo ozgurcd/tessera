@@ -87,7 +87,7 @@ A complete configuration looks like this:
   "client": {
     "tsconfig": "./tsconfig.json",
     "include": ["src/lib/**/*.ts"],
-    "fetchWrappers": ["apiFetch", "authedFetch"],
+    "fetchWrappers": ["apiFetch", { "name": "agFetch", "routeArg": 1 }],
     "routePrefixStrip": ["/api/idp"]
   },
   "server": {
@@ -98,10 +98,14 @@ A complete configuration looks like this:
       { "call": "c.DefaultQuery", "nameArg": 0 },
       { "call": "parsePositiveQuery", "nameArg": 1 }
     ],
+    "nonReaders": ["mw.Respond*"],
     "routeOverrides": {
       "GET /api/v1/audit/events": "internal/handlers/audit_events.go"
     }
   },
+  "extraServers": [
+    { "adapter": "go-nethttp", "root": "../gateway", "prefix": "/api/ag" }
+  ],
   "rules": {
     "unmapped": "skip",
     "unresolved": "warn",
@@ -120,11 +124,32 @@ A complete configuration looks like this:
 ```
 
 `client.include` patterns are relative to the configuration file; an absolute
-pattern is matched against the file's absolute path. `client.routePrefixStrip`
+pattern is matched against the file's absolute path, as written and with its
+directory prefix and the file resolved through symlinks (macOS `/tmp` and `/var`). `client.routePrefixStrip`
 lists path prefixes (a UI proxy mount, for example) removed from client routes,
 on a segment boundary and longest first, before they are paired with server routes.
 
+`client.fetchWrappers` entries are either a name (the route is argument 0 and
+the request options argument 1) or `{ "name", "routeArg", "optionsArg" }` for a
+wrapper that takes the route elsewhere, such as `agFetch(base, route, init)`;
+`optionsArg` defaults to `routeArg + 1`. A call with a spread before those
+positions, or too few arguments, is reported as unresolved.
+
 `server.adapter` is `go-gin` or `go-nethttp`.
+
+`server.nonReaders` lists Gin calls that receive the context and a string but
+read no query field (for example `mw.RespondUnauthenticatedReason`). An entry
+matches a call by exact name, or by prefix when it ends in `*`, and silences the
+"possible unconfigured query reader" warning for it; a `readerShapes` match still
+wins.
+
+`extraServers` takes further server blocks (same fields as `server`) whose
+endpoints are paired with the same client, so one run can check a client against
+several backends. Each block, and `server` itself, may set `prefix`: a path
+prefix (starts with `/`, no trailing `/`) prepended to every route that root
+serves, such as a gateway mount. Endpoint sites stay relative to their own root,
+and a missing root fails the run. `server.maxMountDepth` (default 8) bounds how
+many nested `http.StripPrefix` sub-mux mounts the net/http adapter follows.
 
 Every allow entry requires a query/body location and a reason, preventing an
 exception for one part of a request from silently allowing the same field name
@@ -138,7 +163,7 @@ tessera init                 write a starter config and detect tsconfig
 tessera check                compare all mapped endpoints (the CI command)
 tessera list                 print both extracted halves
 tessera explain <route>      show sent and read fields side by side
-tessera selftest             run the twenty-three bundled known-good/known-bad fixtures
+tessera selftest             run the twenty-eight bundled known-good/known-bad fixtures
 ```
 
 All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
@@ -209,15 +234,28 @@ calls whose pattern is a string literal or a string `const` expression (resolved
 across the tree; an ambiguous name is reported as unresolved). Patterns follow
 Go 1.22: `GET /items/{id}` is method-specific, a pattern without a method serves
 every method, `{id}` and `{id...}` become `:param`, `{$}` ends the path, and a
-trailing-slash subtree such as `/files/` is modeled as `/files/:param` (one
-segment). It maps routes only: handler fields are not read, so fields a client
+trailing-slash subtree such as `/files/`, or a final `{rest...}` wildcard, is a
+subtree route: it serves its own path and every path below it, at any depth, and
+the most specific route wins. The root pattern `/` is deliberately not a subtree,
+or a single catch-all would hide every unmapped client route. A sub-mux mounted
+with `mux.Handle("/api/v1/", http.StripPrefix("/api/v1", sub))` (`sub` a mux
+variable in view, a package-level one registered elsewhere in the package, or a
+call to a function that builds one; nested mounts are followed) serves its routes below the stripped prefix, and the mount itself is
+not a route. A prefix that cannot be resolved, or mounts nested deeper than
+`maxMountDepth` or in a cycle, are reported as unresolved and the sub-mux's routes
+are not registered at a wrong path. A `StripPrefix` over anything else (a
+`FileServer`, say) stays an ordinary subtree route. It maps routes only: handler fields are not read, so fields a client
 sends to such an endpoint produce `UNRESOLVED` instead of a false assurance or a
 false `UNMATCHED`. Unresolvable patterns are always reported.
 
 Property access on a `const` object literal (`PATHS.status`, nested or imported,
 plain or `as const`) resolves to the member's initializer. Objects bound with
 `let`/`var`, built by calls or spreads, or with the member assigned anywhere in
-the using or declaring file stay unresolved; mutation in a third file is not seen.
+the using or declaring file stay unresolved. So does an object, or a literal
+nested in it, that is the target of `Object.assign` or is passed to any call other
+than a read-only one (`Object.freeze`/`keys`/`values`/`entries`, `JSON.stringify`,
+`structuredClone`) in those files, since the callee may mutate it. Mutation in a
+third file is not seen.
 
 This choice keeps the npm package portable. The adapter is isolated behind the
 exported `ServerAdapter` interface so another server implementation does not

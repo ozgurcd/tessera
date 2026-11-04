@@ -28,6 +28,8 @@ export type ReadSet = {
   sites?: Site[];
   /** The adapter found the route but does not model handler fields; sent fields are reported as unresolved, never as unmatched. */
   fieldsUnmodeled?: boolean;
+  /** A net/http `/dir/` or `{rest...}` registration: it serves the route and everything below it. */
+  subtree?: boolean;
 };
 
 export interface ServerAdapter {
@@ -37,10 +39,14 @@ export interface ServerAdapter {
 
 export type ReaderShape = { call: string; nameArg: number };
 
+/** A fetch wrapper whose route is not its first argument; `optionsArg` defaults to `routeArg + 1`. */
+export type FetchWrapper = { name: string; routeArg: number; optionsArg?: number };
+
 export type ClientConfig = {
   tsconfig: string;
   include?: string[];
-  fetchWrappers?: string[];
+  /** A bare name means the route is argument 0 and the request options are argument 1. */
+  fetchWrappers?: Array<string | FetchWrapper>;
   /** Path prefixes removed from client routes (for example a UI proxy mount) before pairing. */
   routePrefixStrip?: string[];
 };
@@ -49,7 +55,13 @@ export type ServerConfig = {
   adapter: string;
   root: string;
   readerShapes?: ReaderShape[];
+  /** Calls that take the Gin context and a string but never read a query field; an entry may end in `*`. */
+  nonReaders?: string[];
   routeOverrides?: Record<string, string>;
+  /** Prepended to every route this root serves (a gateway mount, for example). */
+  prefix?: string;
+  /** net/http: how many nested `http.StripPrefix` sub-mux mounts are followed. */
+  maxMountDepth?: number;
 };
 
 export type RulesConfig = {
@@ -69,6 +81,8 @@ export type AllowEntry = {
 export type TesseraConfig = {
   client: ClientConfig;
   server: ServerConfig;
+  /** Further server roots whose endpoints are paired with the same client. */
+  extraServers?: ServerConfig[];
   rules: RulesConfig;
   allow: AllowEntry[];
 };

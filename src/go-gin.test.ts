@@ -61,3 +61,29 @@ test("duplicate Gin routes retain every possible handler site and union reads", 
     assert.ok(reads[0]?.unresolved.some((reason) => reason.includes("duplicate route registration")));
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("nonReaders silences context-taking calls that read no query field, by exact name or trailing wildcard", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "tessera-nonreaders-"));
+  try {
+    fs.writeFileSync(path.join(directory, "routes.go"), `package api
+      func routes(r *gin.Engine) { r.GET("/x", h) }
+      func h(c *gin.Context) {
+        mw.RespondUnauthenticatedReason(c, "no_session")
+        mw.RespondAuthStoreUnavailable(c, "store_down")
+        guard.Exact(c, "named")
+        guard.Other(c, "kept")
+        localHelper(c, "also_kept")
+        _ = c.Query("limit")
+      }
+    `);
+    const adapter = new GoGinAdapter();
+    const messages = async (nonReaders?: string[]) => (await adapter.extract({ adapter: "go-gin", root: ".", ...(nonReaders ? { nonReaders } : {}) }, directory))[0]!.unresolved.map((reason) => reason.replace(/^\S+ /, ""));
+    assert.equal((await messages()).length, 5);
+    const filtered = await messages(["mw.Respond*", "guard.Exact"]);
+    assert.deepEqual(filtered, ["possible unconfigured query reader 'guard.Other' for 'kept'", "possible unconfigured query reader 'localHelper' for 'also_kept'"]);
+    assert.equal((await adapter.extract({ adapter: "go-gin", root: ".", nonReaders: ["mw.Respond*"] }, directory))[0]!.query.join(), "limit");
+    // a wildcard must not swallow a different package that merely shares a prefix of the text
+    assert.equal((await messages(["mw.Resp*"])).length, 3);
+    assert.equal((await messages(["m*"])).length, 3);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

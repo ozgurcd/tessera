@@ -270,9 +270,15 @@ function appendUnresolved(inspection: HandlerInspection, additions: UnresolvedDe
   return { ...inspection, unresolved: details.map((detail) => detail.message), unresolvedDetails: details };
 }
 
+/** A configured non-reader matches a call by exact name, or by prefix when it ends in `*`. */
+function isNonReader(callName: string, nonReaders: readonly string[]): boolean {
+  return nonReaders.some((entry) => (entry.endsWith("*") ? callName.startsWith(entry.slice(0, -1)) : entry === callName));
+}
+
 function inspectHandler(
   body: FunctionBody,
   readerShapes: ReaderShape[],
+  nonReaders: readonly string[],
   structs: Map<string, StructDefinition[]>,
   functions: Map<string, FunctionBody[]>,
 ): HandlerInspection {
@@ -316,7 +322,7 @@ function inspectHandler(
       }
 
       const takesContext = call.args.some((argument) => argument.length === 1 && contexts.has(argument[0]!.value));
-      if (nameArg !== undefined || shapeMap.has(call.name) || contextBind || !takesContext) continue;
+      if (nameArg !== undefined || shapeMap.has(call.name) || contextBind || !takesContext || isNonReader(call.name, nonReaders)) continue;
       const literal = call.args.find((argument) => argument.length === 1 && argument[0]!.kind === "string")?.[0];
       if (call.name.includes(".")) {
         if (literal) unresolved.push(unresolvedAt(current.file.relative, call.line, `possible unconfigured query reader '${call.name}' for '${literal.value}'`));
@@ -408,6 +414,7 @@ export class GoGinAdapter implements ServerAdapter {
     }
     const structs = namedStructs(files);
     const readerShapes = config.readerShapes?.length ? config.readerShapes : DEFAULT_READERS;
+    const nonReaders = config.nonReaders ?? [];
     const results = new Map<string, ReadSet>();
 
     for (const file of files) {
@@ -467,7 +474,7 @@ export class GoGinAdapter implements ServerAdapter {
           const site: Site = { file: file.relative, line: call.line };
           const inspected = appendUnresolved(
             handler
-              ? inspectHandler(handler, readerShapes, structs, functions)
+              ? inspectHandler(handler, readerShapes, nonReaders, structs, functions)
               : failedInspection(unresolvedAt(file.relative, call.line, "route handler cannot be resolved")),
             group?.unresolved ?? [],
           );
@@ -510,7 +517,7 @@ export class GoGinAdapter implements ServerAdapter {
       const bodies = [...(functionsByFile.get(file.absolute)?.values() ?? [])];
       const body = bodies.length === 1 ? bodies[0] : undefined;
       const inspected = body
-        ? inspectHandler(body, readerShapes, structs, functions)
+        ? inspectHandler(body, readerShapes, nonReaders, structs, functions)
         : failedInspection(unresolvedAt(file.relative, 1, `route override file has ${bodies.length} functions; handler cannot be disambiguated`));
       const site = { file: file.relative, line: body?.line ?? 1 };
       results.set(`${method} ${route}`, { method, route, ...inspected, site });

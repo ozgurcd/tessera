@@ -34,6 +34,40 @@ function stripJsonComments(text: string): string {
   return result;
 }
 
+function validPrefix(prefix: unknown): boolean {
+  return typeof prefix === "string" && prefix.startsWith("/") && prefix.length >= 2 && !prefix.endsWith("/");
+}
+
+function validWrapper(item: unknown): boolean {
+  if (typeof item === "string") return item.length > 0;
+  if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+  const record = item as Record<string, unknown>;
+  const index = (entry: unknown) => Number.isInteger(entry) && Number(entry) >= 0;
+  return Object.keys(record).every((key) => ["name", "routeArg", "optionsArg"].includes(key)) && typeof record.name === "string" && record.name.length > 0 && index(record.routeArg) && (record.optionsArg === undefined || index(record.optionsArg));
+}
+
+// Shared by `server` and every `extraServers` entry; `label` names the entry in errors.
+function validateServer(server: Record<string, unknown>, label: string): void {
+  if (!ADAPTER_NAMES.includes(server.adapter as string)) throw new ConfigError(`unknown server adapter '${String(server.adapter)}' (known: ${ADAPTER_NAMES.join(", ")})`);
+  if (server.readerShapes !== undefined) {
+    if (!Array.isArray(server.readerShapes) || server.readerShapes.some((shape) => {
+      if (!shape || typeof shape !== "object") return true;
+      const record = shape as Record<string, unknown>;
+      return typeof record.call !== "string" || !record.call || !Number.isInteger(record.nameArg) || Number(record.nameArg) < 0;
+    })) throw new ConfigError(`${label}.readerShapes must contain { call, nameArg } entries`);
+  }
+  if (server.nonReaders !== undefined && (!Array.isArray(server.nonReaders) || server.nonReaders.some((item) => typeof item !== "string" || !item))) {
+    throw new ConfigError(`${label}.nonReaders must be an array of non-empty strings`);
+  }
+  if (server.prefix !== undefined && !validPrefix(server.prefix)) throw new ConfigError(`${label}.prefix must start with '/' and must not end with '/'`);
+  if (server.maxMountDepth !== undefined && (!Number.isInteger(server.maxMountDepth) || Number(server.maxMountDepth) < 1)) throw new ConfigError(`${label}.maxMountDepth must be a positive integer`);
+  if (server.routeOverrides !== undefined) {
+    if (!server.routeOverrides || typeof server.routeOverrides !== "object" || Array.isArray(server.routeOverrides) || Object.values(server.routeOverrides as Record<string, unknown>).some((item) => typeof item !== "string" || !item)) {
+      throw new ConfigError(`${label}.routeOverrides must map endpoint keys to file paths`);
+    }
+  }
+}
+
 export function loadConfig(configPath: string): { config: TesseraConfig; directory: string } {
   const absolute = path.resolve(configPath);
   if (!fs.existsSync(absolute)) throw new ConfigError(`configuration file not found: ${configPath}`);
@@ -51,26 +85,25 @@ export function loadConfig(configPath: string): { config: TesseraConfig; directo
   if (!server || typeof server.adapter !== "string" || typeof server.root !== "string") {
     throw new ConfigError("server.adapter and server.root are required");
   }
-  if (!ADAPTER_NAMES.includes(server.adapter)) throw new ConfigError(`unknown server adapter '${server.adapter}' (known: ${ADAPTER_NAMES.join(", ")})`);
-  for (const key of ["include", "fetchWrappers", "routePrefixStrip"] as const) {
+  validateServer(server, "server");
+  for (const key of ["include", "routePrefixStrip"] as const) {
     const setting = client[key];
     if (setting !== undefined && (!Array.isArray(setting) || setting.some((item) => typeof item !== "string" || !item))) {
       throw new ConfigError(`client.${key} must be an array of non-empty strings`);
     }
   }
-  if ((client.routePrefixStrip as string[] | undefined)?.some((prefix) => !prefix.startsWith("/") || prefix.length < 2 || prefix.endsWith("/"))) {
+  if (client.fetchWrappers !== undefined && (!Array.isArray(client.fetchWrappers) || client.fetchWrappers.some((item) => !validWrapper(item)))) {
+    throw new ConfigError("client.fetchWrappers must be an array of non-empty names or { name, routeArg, optionsArg? } entries");
+  }
+  if ((client.routePrefixStrip as string[] | undefined)?.some((prefix) => !validPrefix(prefix))) {
     throw new ConfigError("client.routePrefixStrip entries must start with '/' and must not end with '/'");
   }
-  if (server.readerShapes !== undefined) {
-    if (!Array.isArray(server.readerShapes) || server.readerShapes.some((shape) => {
-      if (!shape || typeof shape !== "object") return true;
-      const record = shape as Record<string, unknown>;
-      return typeof record.call !== "string" || !record.call || !Number.isInteger(record.nameArg) || Number(record.nameArg) < 0;
-    })) throw new ConfigError("server.readerShapes must contain { call, nameArg } entries");
-  }
-  if (server.routeOverrides !== undefined) {
-    if (!server.routeOverrides || typeof server.routeOverrides !== "object" || Array.isArray(server.routeOverrides) || Object.values(server.routeOverrides as Record<string, unknown>).some((item) => typeof item !== "string" || !item)) {
-      throw new ConfigError("server.routeOverrides must map endpoint keys to file paths");
+  if (value.extraServers !== undefined) {
+    if (!Array.isArray(value.extraServers)) throw new ConfigError("extraServers must be an array");
+    for (const [index, extra] of value.extraServers.entries()) {
+      const record = extra as Record<string, unknown> | null;
+      if (!record || typeof record !== "object" || typeof record.adapter !== "string" || typeof record.root !== "string") throw new ConfigError(`extraServers[${index}] requires adapter and root`);
+      validateServer(record, `extraServers[${index}]`);
     }
   }
   const rules = (value.rules ?? {}) as Record<string, unknown>;
@@ -93,6 +126,7 @@ export function loadConfig(configPath: string): { config: TesseraConfig; directo
     config: {
       client: client as TesseraConfig["client"],
       server: server as TesseraConfig["server"],
+      ...(value.extraServers ? { extraServers: value.extraServers as TesseraConfig["server"][] } : {}),
       rules: { unmapped, unresolved, reverseDirection: rules.reverseDirection === true },
       allow: allow as TesseraConfig["allow"],
     },

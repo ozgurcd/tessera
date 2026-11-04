@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- Add `client.fetchWrappers` entries of the form `{ name, routeArg, optionsArg }` for
+  wrappers whose route is not argument 0; plain names keep their meaning (TES-04).
+- Add `server.nonReaders` to silence "possible unconfigured query reader" for calls that
+  take the Gin context and a string but read no field; an entry may end in `*` (TES-05).
+- Add `extraServers` and a per-root `prefix` so one run checks a client against several
+  server roots (TES-07).
+- A `const` object mutated by `Object.assign`, or passed to a call that may mutate it, now
+  resolves as computed instead of to its stale initializer (TES-08).
+- net/http: `/dir/` and `{rest...}` patterns are subtree routes that match at any depth;
+  sub-muxes mounted with `http.StripPrefix` are registered below the stripped prefix, bounded
+  by `server.maxMountDepth` (TES-09).
+- An absolute `client.include` pattern now matches through symlinked directories such as
+  macOS `/tmp` and `/var` (TES-10).
+- Expand the adversarial suite to twenty-eight fixtures.
+
 ## 0.1.1 — 2026-11-04
 
 - Add the `go-nethttp` adapter: `HandleFunc`/`Handle` registrations with literal or

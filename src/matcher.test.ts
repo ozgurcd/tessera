@@ -97,3 +97,23 @@ test("an unresolved server registration is always reported, even when no client 
   const result = match([], [hidden], rules, []);
   assert.equal(result.summary.unresolved, 1);
 });
+
+const RULES = { unmapped: "skip", unresolved: "warn", reverseDirection: false } as const;
+const subtreeRead = (method: string, route: string): ReadSet => ({ method, route, query: [], body: [], unresolved: [], site: { file: "routes.go", line: 1 }, fieldsUnmodeled: true, subtree: true });
+const sendTo = (route: string, method = "GET"): SendSet => ({ method, route, query: [], body: [], unresolved: [], site });
+
+test("a subtree read pairs with sends at any depth below it, longest prefix first, on a segment boundary", () => {
+  const reads = [subtreeRead("*", "/files/:param"), subtreeRead("*", "/files/img/:param"), { ...subtreeRead("GET", "/other/:param"), subtree: false }];
+  const result = match([sendTo("/files/a"), sendTo("/files/a/b/c"), sendTo("/files/img/x/y"), sendTo("/files"), sendTo("/filesx/a"), sendTo("/other/a/b")], reads, RULES, []);
+  const unmapped = result.findings.filter((finding) => finding.kind === "unmapped").map((finding) => (finding.kind === "unmapped" ? finding.route : ""));
+  assert.deepEqual(unmapped.sort(), ["/files", "/filesx/a", "/other/a/b"]);
+});
+
+test("an exact read wins over a subtree, and a subtree read counts as paired for its unresolved notes", () => {
+  const exact: ReadSet = { method: "GET", route: "/files/special", query: ["q"], body: [], unresolved: [], site: { file: "exact.go", line: 3 } };
+  const subtree: ReadSet = { ...subtreeRead("*", "/files/:param"), unresolved: ["subtree note"] };
+  const withQuery = { ...sendTo("/files/special"), query: ["ghost"] };
+  const result = match([withQuery, sendTo("/files/a/b")], [exact, subtree], RULES, []);
+  assert.equal(result.summary.unmatched, 1);
+  assert.ok(result.findings.some((finding) => finding.kind === "unresolved" && finding.message === "subtree note"));
+});

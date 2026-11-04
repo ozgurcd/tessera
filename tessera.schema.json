@@ -13,7 +13,24 @@
       "properties": {
         "tsconfig": { "type": "string", "minLength": 1 },
         "include": { "type": "array", "items": { "type": "string", "minLength": 1 } },
-        "fetchWrappers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "fetchWrappers": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              { "type": "string", "minLength": 1 },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name", "routeArg"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "routeArg": { "type": "integer", "minimum": 0 },
+                  "optionsArg": { "type": "integer", "minimum": 0 }
+                }
+              }
+            ]
+          }
+        },
         "routePrefixStrip": { "type": "array", "items": { "type": "string", "pattern": "^/.*[^/]$" } }
       }
     },
@@ -36,9 +53,13 @@
             }
           }
         },
+        "nonReaders": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+        "prefix": { "type": "string", "pattern": "^/.*[^/]$" },
+        "maxMountDepth": { "type": "integer", "minimum": 1, "default": 8 },
         "routeOverrides": { "type": "object", "additionalProperties": { "type": "string", "minLength": 1 } }
       }
     },
+    "extraServers": { "type": "array", "items": { "$ref": "#/properties/server" } },
     "rules": {
       "type": "object",
       "additionalProperties": false,

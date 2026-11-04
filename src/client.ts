@@ -5,6 +5,10 @@ import * as ts from "typescript/unstable/ast";
 import { ConfigError } from "./config.js";
 import { UNRESOLVED_ROUTE, type ClientConfig, type SendSet, type Site } from "./types.js";
 
+// Where a fetch-like call keeps its route and request options.
+type CallShape = { routeArg: number; optionsArg: number };
+const FETCH_SHAPE: CallShape = { routeArg: 0, optionsArg: 1 };
+
 type Segment = { kind: "text"; value: string } | { kind: "expression"; value: ts.Expression };
 type UrlAnalysis = { routes?: string[]; query: Set<string>; queryExpressions: ts.Expression[]; reasons: string[] };
 type PathExpression = { kind: "literals"; values: string[] } | { kind: "parameter" } | { kind: "unresolved" };
@@ -30,6 +34,19 @@ function globRegex(pattern: string): RegExp {
     else output += char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
   }
   return new RegExp(`${output}$`);
+}
+
+function realpath(file: string): string {
+  try { return fs.realpathSync(file); } catch { return file; }
+}
+
+// Resolves the leading glob-free directories of an absolute pattern through symlinks.
+function realpathPrefix(pattern: string): string {
+  const segments = pattern.replaceAll("\\", "/").split("/");
+  const fixed = segments.findIndex((segment) => /[*?{[]/.test(segment));
+  const prefix = (fixed < 0 ? segments.slice(0, -1) : segments.slice(0, fixed)).join("/") || "/";
+  const resolved = realpath(prefix);
+  return resolved === prefix ? pattern : `${resolved.replace(/\/$/, "")}/${segments.slice(prefix === "/" ? 1 : prefix.split("/").length).join("/")}`;
 }
 
 function propertyName(node: ts.PropertyName): string | undefined {
@@ -86,19 +103,79 @@ function isAssignmentTarget(node: ts.Node): boolean {
   return ts.isDeleteExpression(parent);
 }
 
-// Mutation is looked for in the file that uses the member and in the file that declares it.
-function isMutated(symbol: CompilerSymbol, files: ts.SourceFile[], checker: Checker): boolean {
-  let mutated = false;
+// Calls that read an object without mutating it; any other call that receives a
+// const object (or a nested literal of it) is assumed to be able to mutate it.
+const READ_ONLY_CALLS = new Set(["Object.freeze", "Object.isFrozen", "Object.keys", "Object.values", "Object.entries", "Object.hasOwn", "Object.getOwnPropertyNames", "JSON.stringify", "structuredClone"]);
+
+type FileMutations = { members: Set<CompilerSymbol>; literals: Set<string> };
+const mutationCache = new WeakMap<ts.SourceFile, FileMutations>();
+
+function literalKey(literal: ts.ObjectLiteralExpression): string {
+  return `${literal.getSourceFile().fileName}:${literal.getStart()}`;
+}
+
+function calleeText(expression: ts.Expression): string | undefined {
+  expression = unwrap(expression);
+  if (ts.isIdentifier(expression)) return expression.text;
+  if (ts.isPropertyAccessExpression(expression) && ts.isIdentifier(expression.expression)) return `${expression.expression.text}.${expression.name.text}`;
+  return undefined;
+}
+
+// The object literal an expression refers to, through const aliases and const-object members.
+function literalOf(expression: ts.Expression, checker: Checker, depth = 0): ts.ObjectLiteralExpression | undefined {
+  expression = unwrap(expression);
+  if (ts.isObjectLiteralExpression(expression)) return expression;
+  if (depth > 8) return undefined;
+  let declaration: ts.Node | undefined;
+  if (ts.isIdentifier(expression)) {
+    const symbol = checker.getSymbolAtLocation(expression);
+    declaration = symbol && declarationOf(symbol);
+  } else if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
+    const name = ts.isPropertyAccessExpression(expression) ? expression.name : expression.argumentExpression;
+    const symbol = name && (ts.isIdentifier(name) || ts.isStringLiteralLikeNode(name)) ? checker.getSymbolAtLocation(name) : undefined;
+    declaration = symbol && declarationOf(symbol);
+  }
+  const initializer = declaration && (ts.isVariableDeclaration(declaration) || ts.isPropertyAssignment(declaration)) ? declaration.initializer : undefined;
+  return initializer ? literalOf(initializer, checker, depth + 1) : undefined;
+}
+
+// One pass per file finds every member assignment and every call that could mutate a literal.
+function fileMutations(file: ts.SourceFile, checker: Checker): FileMutations {
+  const cached = mutationCache.get(file);
+  if (cached) return cached;
+  const result: FileMutations = { members: new Set(), literals: new Set() };
   const visit = (node: ts.Node): void => {
-    if (mutated) return;
     if ((ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) && isAssignmentTarget(node)) {
       const target = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
-      if (target && checker.getSymbolAtLocation(target) === symbol) { mutated = true; return; }
+      const symbol = target && checker.getSymbolAtLocation(target);
+      if (symbol) result.members.add(symbol);
+    } else if (ts.isCallExpression(node)) {
+      const callee = calleeText(node.expression);
+      // Object.assign mutates only its target; its sources are read.
+      const arguments_ = callee === "Object.assign" ? node.arguments.slice(0, 1) : callee && READ_ONLY_CALLS.has(callee) ? [] : node.arguments;
+      for (const argument of arguments_) {
+        const literal = literalOf(argument, checker);
+        if (literal) result.literals.add(literalKey(literal));
+      }
     }
     node.forEachChild(visit);
   };
-  for (const file of files) visit(file);
-  return mutated;
+  visit(file);
+  mutationCache.set(file, result);
+  return result;
+}
+
+// Mutation is looked for in the file that uses the member and in the file that declares it.
+// A literal passed to a call, or Object.assign target, taints its members and every literal nested in it.
+function isMutated(symbol: CompilerSymbol, literal: ts.ObjectLiteralExpression, files: ts.SourceFile[], checker: Checker): boolean {
+  const owners: string[] = [];
+  for (let current: ts.Node | undefined = literal; current; current = current.parent) {
+    if (ts.isObjectLiteralExpression(current)) owners.push(literalKey(current));
+  }
+  return files.some((file) => {
+    const mutations = fileMutations(file, checker);
+    return mutations.members.has(symbol) || owners.some((owner) => mutations.literals.has(owner));
+  });
 }
 
 function constObjectMember(expression: ts.PropertyAccessExpression | ts.ElementAccessExpression, checker: Checker): ts.Expression | undefined {
@@ -108,7 +185,7 @@ function constObjectMember(expression: ts.PropertyAccessExpression | ts.ElementA
   const declaration = symbol && declarationOf(symbol);
   if (!symbol || !declaration || !ts.isPropertyAssignment(declaration) || !ts.isObjectLiteralExpression(declaration.parent) || !ownedByConst(declaration.parent)) return undefined;
   const files = [...new Set([expression.getSourceFile(), declaration.getSourceFile()])];
-  return isMutated(symbol, files, checker) ? undefined : declaration.initializer;
+  return isMutated(symbol, declaration.parent, files, checker) ? undefined : declaration.initializer;
 }
 
 function symbolAt(expression: ts.Expression, checker: Checker): CompilerSymbol | undefined {
@@ -443,16 +520,19 @@ function namedOption(object: ts.ObjectLiteralExpression, name: string): ts.Expre
   return undefined;
 }
 
-function analyzeCall(call: ts.CallExpression, checker: Checker, root: string, prefixes: readonly string[]): SendSet[] {
+function analyzeCall(call: ts.CallExpression, checker: Checker, root: string, prefixes: readonly string[], shape: CallShape): SendSet[] {
   const site = siteFor(call, root);
   const unresolved: string[] = [];
-  const urlArg = call.arguments[0];
+  // A spread before an argument makes its position unknowable.
+  const spreadBefore = (index: number) => call.arguments.slice(0, index).some((argument) => ts.isSpreadElement(argument));
+  const urlArg = spreadBefore(shape.routeArg) ? undefined : call.arguments[shape.routeArg];
   const url = urlArg ? analyzeUrl(urlArg, checker) : { query: new Set<string>(), queryExpressions: [], reasons: ["missing URL argument"] };
   unresolved.push(...url.reasons);
-  const options = optionsObject(call.arguments[1], checker);
+  const optionsArg = spreadBefore(shape.optionsArg) ? undefined : call.arguments[shape.optionsArg];
+  const options = optionsObject(optionsArg, checker);
   let method = "GET";
   const body = new Set<string>();
-  if (call.arguments[1] && !options) unresolved.push("request options are computed; cannot analyze method or body");
+  if (optionsArg && !options) unresolved.push("request options are computed; cannot analyze method or body");
   if (options) {
     const methodExpression = namedOption(options, "method");
     if (methodExpression) {
@@ -490,14 +570,20 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
   const api = new API({ cwd: path.dirname(tsconfigPath) });
   const parsed = api.parseConfigFile(tsconfigPath);
   // An absolute include pattern is matched against the file's absolute path; any other is relative to the configuration file.
-  const patterns = config.include?.map((pattern) => ({ regex: globRegex(pattern), absolute: path.isAbsolute(pattern) }));
+  // An absolute pattern is compared in both spellings (as written and with its fixed directory prefix
+  // resolved through symlinks, e.g. macOS /tmp -> /private/tmp) against the file as named and as resolved.
+  const patterns = config.include?.map((pattern) => {
+    const absolute = path.isAbsolute(pattern);
+    return { regexes: absolute ? [...new Set([pattern, realpathPrefix(pattern)])].map(globRegex) : [globRegex(pattern)], absolute };
+  });
   const root = configDirectory;
   const files = parsed.fileNames.filter((file) => {
     if (file.endsWith(".d.ts")) return false;
     if (!patterns?.length) return true;
     const relative = path.relative(root, file).replaceAll(path.sep, "/");
-    const absolute = file.replaceAll(path.sep, "/");
-    return patterns.some((pattern) => pattern.regex.test(pattern.absolute ? absolute : relative));
+    const spellings = [file.replaceAll(path.sep, "/")];
+    if (patterns.some((pattern) => pattern.absolute)) spellings.push(realpath(file).replaceAll(path.sep, "/"));
+    return patterns.some((pattern) => pattern.regexes.some((regex) => (pattern.absolute ? spellings.some((spelling) => regex.test(spelling)) : regex.test(relative))));
   });
   if (!files.length) { api.close(); throw new ConfigError(`client.include matched no TypeScript source files (patterns: ${(config.include ?? []).join(", ") || "none"}; searched ${parsed.fileNames.length} files from ${config.tsconfig})`); }
   const snapshot = api.updateSnapshot({ openProjects: [tsconfigPath] });
@@ -505,7 +591,13 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
   if (!project) { api.close(); throw new ConfigError(`TypeScript could not load project: ${config.tsconfig}`); }
   const program = project.program;
   const checker = project.checker;
-  const wrappers = new Set(config.fetchWrappers ?? []);
+  const shapes = new Map<string, CallShape>();
+  for (const wrapper of config.fetchWrappers ?? []) {
+    const name = typeof wrapper === "string" ? wrapper : wrapper.name;
+    const routeArg = typeof wrapper === "string" ? FETCH_SHAPE.routeArg : wrapper.routeArg;
+    if (!shapes.has(name)) shapes.set(name, { routeArg, optionsArg: typeof wrapper === "string" ? FETCH_SHAPE.optionsArg : wrapper.optionsArg ?? routeArg + 1 });
+  }
+  const wrappers = new Set(shapes.keys());
   // Longest first so a nested mount such as /api/idp wins over /api.
   const prefixes = [...(config.routePrefixStrip ?? [])].sort((a, b) => b.length - a.length);
   const sends: SendSet[] = [];
@@ -515,7 +607,7 @@ export function extractClient(config: ClientConfig, configDirectory: string): Se
     const visit = (node: ts.Node): void => {
       if (ts.isCallExpression(node) && isConfiguredCall(node.expression, checker, wrappers)) {
         const callee = rootCalleeName(node.expression, checker);
-        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(...analyzeCall(node, checker, root, prefixes));
+        if (!(callee?.name === "fetch" && callee.library && isInsideConfiguredWrapper(node, wrappers))) sends.push(...analyzeCall(node, checker, root, prefixes, callee?.library ? FETCH_SHAPE : shapes.get(callee?.name ?? "") ?? FETCH_SHAPE));
       }
       node.forEachChild(visit);
     };

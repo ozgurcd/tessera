@@ -71,9 +71,29 @@ function readMapFor(reads: ReadSet[]): Map<string, ReadSet> {
       unresolvedDetails,
       sites: uniqueSites([...readSites(existing), ...readSites(read)]),
       ...(existing.fieldsUnmodeled || read.fieldsUnmodeled ? { fieldsUnmodeled: true } : {}),
+      ...(existing.subtree || read.subtree ? { subtree: true } : {}),
     });
   }
   return result;
+}
+
+const SUBTREE_SUFFIX = "/:param";
+
+/**
+ * The read that serves a send: an exact route (method-specific before method-less), else the longest
+ * subtree route that is a segment-boundary prefix of the send's route.
+ */
+function findRead(readMap: Map<string, ReadSet>, subtrees: Array<{ read: ReadSet; base: string }>, send: SendSet): ReadSet | undefined {
+  const exact = readMap.get(key(send.method, send.route)) ?? readMap.get(key(ANY_METHOD, send.route));
+  if (exact) return exact;
+  let best: { read: ReadSet; base: string } | undefined;
+  for (const candidate of subtrees) {
+    if (candidate.read.method !== ANY_METHOD && candidate.read.method.toUpperCase() !== send.method.toUpperCase()) continue;
+    if (!send.route.startsWith(`${candidate.base}/`) || send.route.length === candidate.base.length + 1) continue;
+    const better = !best || candidate.base.length > best.base.length || (candidate.base.length === best.base.length && best.read.method === ANY_METHOD && candidate.read.method !== ANY_METHOD);
+    if (better) best = candidate;
+  }
+  return best?.read;
 }
 
 function deduplicate(findings: Finding[]): Finding[] {
@@ -89,6 +109,8 @@ function deduplicate(findings: Finding[]): Finding[] {
 export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, allow: AllowEntry[]): CheckResult {
   const findings: Finding[] = [];
   const readMap = readMapFor(reads);
+  const subtrees = [...readMap.values()].filter((read) => read.subtree && read.route.endsWith(SUBTREE_SUFFIX)).map((read) => ({ read, base: read.route.slice(0, -SUBTREE_SUFFIX.length) }));
+  const matched = new Set<ReadSet>();
   const sendMap = new Map<string, SendSet[]>();
   const sentRoutes = new Set(sends.map((send) => send.route));
   for (const send of sends) {
@@ -99,7 +121,8 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     for (const message of send.unresolved) findings.push({ kind: "unresolved", message, site: send.site });
     if (send.route === "<unresolved>") continue;
     // A method-less net/http pattern serves every method; a method-specific one takes precedence.
-    const read = readMap.get(endpoint) ?? readMap.get(key(ANY_METHOD, send.route));
+    const read = findRead(readMap, subtrees, send);
+    if (read) matched.add(read);
     if (!read) {
       findings.push({ kind: "unmapped", method: send.method, route: send.route, site: send.site, error: rules.unmapped === "error" });
       continue;
@@ -120,7 +143,7 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
   }
   for (const read of readMap.values()) {
     // An unresolved registration pairs with no client call, so it is reported unconditionally.
-    const paired = read.route === UNRESOLVED_ROUTE || (read.method === ANY_METHOD ? sentRoutes.has(read.route) : sendMap.has(key(read.method, read.route)));
+    const paired = read.route === UNRESOLVED_ROUTE || matched.has(read) || (read.method === ANY_METHOD ? sentRoutes.has(read.route) : sendMap.has(key(read.method, read.route)));
     if (paired) {
       for (const detail of readUnresolved(read)) findings.push({ kind: "unresolved", message: detail.message, site: detail.site });
     }

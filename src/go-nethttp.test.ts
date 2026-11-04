@@ -5,14 +5,14 @@ import path from "node:path";
 import test from "node:test";
 import { GoNetHttpAdapter } from "./go-nethttp.js";
 
-async function extractFrom(files: Record<string, string>) {
+async function extractFrom(files: Record<string, string>, server: Record<string, unknown> = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "tessera-nethttp-"));
   try {
     for (const [name, source] of Object.entries(files)) {
       fs.mkdirSync(path.dirname(path.join(directory, name)), { recursive: true });
       fs.writeFileSync(path.join(directory, name), source);
     }
-    return await new GoNetHttpAdapter().extract({ adapter: "go-nethttp", root: "." }, directory);
+    return await new GoNetHttpAdapter().extract({ adapter: "go-nethttp", root: ".", ...server }, directory);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 }
 
@@ -86,4 +86,109 @@ test("duplicate registrations keep one endpoint with every site; test files and 
 test("a tree without routes yields none, and a missing root is a ConfigError", async () => {
   assert.deepEqual(await extractFrom({ "readme.txt": "none" }), []);
   await assert.rejects(new GoNetHttpAdapter().extract({ adapter: "go-nethttp", root: "./does-not-exist" }, os.tmpdir()), /server root not found/);
+});
+
+test("a trailing-slash pattern and a {rest...} wildcard are subtree routes; a single wildcard and the root are not", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      mux.HandleFunc("/files/", f)
+      mux.HandleFunc("GET /rest/{path...}", g)
+      mux.HandleFunc("GET /one/{id}", h)
+      mux.HandleFunc("/", root)
+    }` });
+  const flags = Object.fromEntries(reads.map((read) => [`${read.method} ${read.route}`, read.subtree === true]));
+  assert.deepEqual(flags, { "* /": false, "* /files/:param": true, "GET /one/:param": false, "GET /rest/:param": true });
+});
+
+test("a sub-mux mounted with http.StripPrefix serves its routes below the stripped prefix and the mount itself is not a subtree", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      sub := http.NewServeMux()
+      sub.HandleFunc("GET /items", a)
+      sub.HandleFunc("GET /items/{id}", b)
+      sub.HandleFunc("/", rootOfSub)
+      mux.Handle("/api/v1/", http.StripPrefix("/api/v1", sub))
+    }` });
+  assert.deepEqual(summary(reads), ["* /api/v1", "GET /api/v1/items", "GET /api/v1/items/:param"]);
+  assert.ok(reads.every((read) => !read.subtree));
+});
+
+test("StripPrefix mounts follow nested muxes, constructor functions, and constants; the same receiver name elsewhere is not affected", async () => {
+  const reads = await extractFrom({
+    "paths.go": `package api
+      const v1 = "/api/v1"`,
+    "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      mux.Handle(v1+"/", http.StripPrefix(v1, items()))
+      inner := http.NewServeMux()
+      inner.HandleFunc("GET /leaf", leaf)
+      mid := http.NewServeMux()
+      mid.Handle("/deep/", http.StripPrefix("/deep", inner))
+      mux.Handle("/mid/", http.StripPrefix("/mid", mid))
+    }
+    func items() *http.ServeMux {
+      m := http.NewServeMux()
+      m.HandleFunc("GET /things", a)
+      return m
+    }
+    func other(m *http.ServeMux) {
+      m.HandleFunc("GET /unmounted", a)
+    }` });
+  assert.deepEqual(summary(reads), ["GET /api/v1/things", "GET /mid/deep/leaf", "GET /unmounted"]);
+});
+
+test("a StripPrefix over a non-mux handler keeps its subtree route, and an unresolvable prefix is reported", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.Dir("."))))
+      mux.Handle("/dyn/", http.StripPrefix(prefixFor(), subMux))
+      subMux := http.NewServeMux()
+      subMux.HandleFunc("GET /x", a)
+    }` });
+  assert.ok(reads.some((read) => read.route === "/static/:param" && read.subtree === true), JSON.stringify(summary(reads)));
+  const unresolved = reads.flatMap((read) => read.unresolvedDetails ?? []).map((detail) => detail.message);
+  assert.ok(unresolved.some((message) => message.includes("StripPrefix")), unresolved.join("\n"));
+  assert.ok(!summary(reads).includes("GET /x"), "a sub-mux with an unresolvable mount prefix must not be registered at the wrong route");
+});
+
+test("StripPrefix nesting beyond maxMountDepth is reported unresolved, not registered at a wrong route", async () => {
+  const source = `package api
+    func routes(mux *http.ServeMux) {
+      c := http.NewServeMux()
+      c.HandleFunc("GET /leaf", leaf)
+      b := http.NewServeMux()
+      b.Handle("/c/", http.StripPrefix("/c", c))
+      a := http.NewServeMux()
+      a.Handle("/b/", http.StripPrefix("/b", b))
+      mux.Handle("/a/", http.StripPrefix("/a", a))
+    }`;
+  assert.deepEqual(summary(await extractFrom({ "routes.go": source })), ["GET /a/b/c/leaf"]);
+  assert.deepEqual(summary(await extractFrom({ "routes.go": source }, { maxMountDepth: 3 })), ["GET /a/b/c/leaf"]);
+  const shallow = await extractFrom({ "routes.go": source }, { maxMountDepth: 2 });
+  assert.ok(!summary(shallow).includes("GET /a/b/c/leaf"));
+  assert.ok(shallow.flatMap((read) => read.unresolvedDetails ?? []).some((detail) => detail.message.includes("maxMountDepth")));
+});
+
+test("a StripPrefix mount cycle terminates and is reported", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes() {
+      a := http.NewServeMux()
+      b := http.NewServeMux()
+      a.Handle("/b/", http.StripPrefix("/b", b))
+      b.Handle("/a/", http.StripPrefix("/a", a))
+      a.HandleFunc("GET /x", x)
+    }` });
+  assert.ok(reads.flatMap((read) => read.unresolvedDetails ?? []).some((detail) => detail.message.includes("maxMountDepth")), JSON.stringify(summary(reads)));
+});
+
+test("a package-level sub-mux registered in another function is found by receiver name; an unrelated receiver of another package is not", async () => {
+  const reads = await extractFrom({
+    "api/routes.go": `package api
+      var apiMux = http.NewServeMux()
+      func init() { apiMux.HandleFunc("GET /ping", ping) }
+      func mount(mux *http.ServeMux) { mux.Handle("/api/", http.StripPrefix("/api", apiMux)) }`,
+    "other/routes.go": `package other
+      func init() { apiMux.HandleFunc("GET /elsewhere", e) }`,
+  });
+  assert.deepEqual(summary(reads), ["GET /api/ping", "GET /elsewhere"]);
 });
