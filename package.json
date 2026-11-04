@@ -1,6 +1,6 @@
 {
   "name": "@identuum/tessera",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Static analysis that checks TypeScript HTTP clients against server handlers",
   "type": "module",
   "bin": {

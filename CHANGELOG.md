@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.2 — 2026-11-04
 
 - Add `client.fetchWrappers` entries of the form `{ name, routeArg, optionsArg }` for
   wrappers whose route is not argument 0; plain names keep their meaning (TES-04).
