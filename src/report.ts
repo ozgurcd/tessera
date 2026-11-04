@@ -22,12 +22,13 @@ export function findingLine(finding: Finding): string {
     return `UNMATCHED  ${finding.method} ${finding.route}  ${finding.location} field '${finding.field}' is read by ${locations(finding.sources ?? [finding.source])} but no client call sends it (${locations(finding.counterparts ?? [finding.counterpart])})`;
   }
   if (finding.kind === "unresolved") return `UNRESOLVED ${location(finding.site)}  ${finding.message}`;
+  if (finding.kind === "catch-all") return `CATCH-ALL  ${finding.method} ${finding.route}  (matched by catch-all ${finding.via.method} ${finding.via.route} at ${location(finding.via.site)}; no specific handler, fields NOT checked)`;
   return `UNMAPPED   ${finding.method} ${finding.route}  (${finding.error ? "error, NOT checked" : "skipped, NOT checked"})`;
 }
 
 export function humanResult(result: CheckResult): string {
   const lines = result.findings.map(findingLine);
-  lines.push(`tessera: ${result.summary.unmatched} unmatched, ${result.summary.unresolved} unresolved, ${result.summary.unmapped} unmapped`);
+  lines.push(`tessera: ${result.summary.unmatched} unmatched, ${result.summary.unresolved} unresolved, ${result.summary.unmapped} unmapped, ${result.summary.catchAll} matched by catch-all`);
   return lines.join("\n");
 }
 

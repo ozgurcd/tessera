@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ConfigError } from "./config.js";
-import type { ReadSet, ReaderShape, ServerAdapter, ServerConfig, Site, UnresolvedDetail } from "./types.js";
+import { DEFAULT_SERVER_EXCLUDE, type ReadSet, type ReaderShape, ServerAdapter, ServerConfig, Site, UnresolvedDetail } from "./types.js";
 
 export type Token = { value: string; kind: "identifier" | "string" | "symbol"; line: number };
 type ParsedFile = { absolute: string; relative: string; tokens: Token[] };
@@ -24,15 +24,23 @@ const DEFAULT_READERS: ReaderShape[] = [
   { call: "c.GetQueryArray", nameArg: 0 },
 ];
 
-export function walk(directory: string): string[] {
+/**
+ * Go source files under `root`, skipping dot directories, vendor and every `exclude` entry: a bare name
+ * excludes a directory of that name at any depth, an entry with a slash a path relative to `root`.
+ */
+export function walk(root: string, exclude: readonly string[] = DEFAULT_SERVER_EXCLUDE): string[] {
   const result: string[] = [];
-  if (!fs.existsSync(directory)) return result;
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name.startsWith(".") || entry.name === "vendor" || entry.name === "testdata") continue;
-    const item = path.join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...walk(item));
-    else if (entry.isFile() && entry.name.endsWith(".go") && !entry.name.endsWith("_test.go")) result.push(item);
-  }
+  const visit = (directory: string, relative: string): void => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const item = path.join(directory, entry.name);
+      const itemRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (entry.name.startsWith(".") || entry.name === "vendor" || exclude.some((pattern) => (pattern.includes("/") ? pattern.replace(/^\.?\/|\/$/g, "") === itemRelative : pattern === entry.name))) continue;
+        visit(item, itemRelative);
+      } else if (entry.isFile() && !entry.name.startsWith(".") && entry.name.endsWith(".go") && !entry.name.endsWith("_test.go")) result.push(item);
+    }
+  };
+  if (fs.existsSync(root)) visit(root, "");
   return result;
 }
 
@@ -404,7 +412,7 @@ export class GoGinAdapter implements ServerAdapter {
     const config = input as ServerConfig;
     const root = path.resolve(configDirectory, config.root);
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new ConfigError(`server root not found: ${config.root}`);
-    const files = walk(root).map((absolute) => ({ absolute, relative: path.relative(root, absolute).replaceAll(path.sep, "/"), tokens: tokenize(fs.readFileSync(absolute, "utf8")) }));
+    const files = walk(root, config.exclude).map((absolute) => ({ absolute, relative: path.relative(root, absolute).replaceAll(path.sep, "/"), tokens: tokenize(fs.readFileSync(absolute, "utf8")) }));
     const functions = new Map<string, FunctionBody[]>();
     const functionsByFile = new Map<string, Map<string, FunctionBody>>();
     for (const file of files) {

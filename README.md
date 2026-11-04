@@ -11,7 +11,7 @@ read by one endpoint cannot hide a defect in another.
 
 ```text
 UNMATCHED  POST /api/v1/organizations  body field 'admin_email' is sent by src/api.ts:42 but no handler field reads it (handlers/organizations.go:18)
-tessera: 1 unmatched, 0 unresolved, 0 unmapped
+tessera: 1 unmatched, 0 unresolved, 0 unmapped, 0 matched by catch-all
 ```
 
 Tessera is a source analyzer, not a runtime proxy, schema generator, or
@@ -99,6 +99,7 @@ A complete configuration looks like this:
       { "call": "parsePositiveQuery", "nameArg": 1 }
     ],
     "nonReaders": ["mw.Respond*"],
+    "exclude": ["examples", "testdata", "tools"],
     "routeOverrides": {
       "GET /api/v1/audit/events": "internal/handlers/audit_events.go"
     }
@@ -143,6 +144,12 @@ matches a call by exact name, or by prefix when it ends in `*`, and silences the
 "possible unconfigured query reader" warning for it; a `readerShapes` match still
 wins.
 
+`server.exclude` lists directories under the root that are not the server: a bare
+name matches a directory of that name at any depth, an entry with a slash is a path
+relative to the root. The default is `["examples", "testdata", "tools"]`, so example,
+tool and test mains do not register routes; setting `exclude` replaces the default
+(`[]` scans everything). Both Go adapters honor it.
+
 `extraServers` takes further server blocks (same fields as `server`) whose
 endpoints are paired with the same client, so one run can check a client against
 several backends. Each block, and `server` itself, may set `prefix`: a path
@@ -163,10 +170,11 @@ tessera init                 write a starter config and detect tsconfig
 tessera check                compare all mapped endpoints (the CI command)
 tessera list                 print both extracted halves
 tessera explain <route>      show sent and read fields side by side
-tessera selftest             run the twenty-eight bundled known-good/known-bad fixtures
+tessera selftest             run the twenty-nine bundled known-good/known-bad fixtures
+tessera version              print "tessera v<version>"; --json prints {"schema_version":"tessera.version.v1","version":"v<version>"}
 ```
 
-All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
+`-v` and `--version` still print the bare version number. All commands accept `--config <path>`, `--json`, and `--quiet`. JSON responses
 contain `schemaVersion: 1` so automation can reject incompatible future output.
 
 The exit codes are stable API:
@@ -236,7 +244,13 @@ Go 1.22: `GET /items/{id}` is method-specific, a pattern without a method serves
 every method, `{id}` and `{id...}` become `:param`, `{$}` ends the path, and a
 trailing-slash subtree such as `/files/`, or a final `{rest...}` wildcard, is a
 subtree route: it serves its own path and every path below it, at any depth, and
-the most specific route wins. The root pattern `/` is deliberately not a subtree,
+the most specific route wins. A client call served only by such a subtree is
+**not** reported as mapped: it is a separate `CATCH-ALL` finding, counted as
+"matched by catch-all" in the summary and as `summary.catchAll` and `kind: "catch-all"`
+(with `via`, the catch-all route and site) in JSON. Its fields are not checked, because
+the catch-all handler dispatches by itself and no specific route is known to serve the call.
+A subtree whose handler wraps a mux (`mux.Handle("/x/", wrap(inner))`, no `StripPrefix`) is
+a mount, not a catch-all: only the routes registered on `inner` count. The root pattern `/` is deliberately not a subtree,
 or a single catch-all would hide every unmapped client route. A sub-mux mounted
 with `mux.Handle("/api/v1/", http.StripPrefix("/api/v1", sub))` (`sub` a mux
 variable in view, a package-level one registered elsewhere in the package, or a
@@ -252,7 +266,7 @@ Property access on a `const` object literal (`PATHS.status`, nested or imported,
 plain or `as const`) resolves to the member's initializer. Objects bound with
 `let`/`var`, built by calls or spreads, or with the member assigned anywhere in
 the using or declaring file stay unresolved. So does an object, or a literal
-nested in it, that is the target of `Object.assign` or is passed to any call other
+nested in it, that is the target of `Object.assign`, passed to a `new` expression, or passed to any call other
 than a read-only one (`Object.freeze`/`keys`/`values`/`entries`, `JSON.stringify`,
 `structuredClone`) in those files, since the callee may mutate it. Mutation in a
 third file is not seen.

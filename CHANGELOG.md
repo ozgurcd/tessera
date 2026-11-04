@@ -15,7 +15,16 @@
   by `server.maxMountDepth` (TES-09).
 - An absolute `client.include` pattern now matches through symlinked directories such as
   macOS `/tmp` and `/var` (TES-10).
-- Expand the adversarial suite to twenty-eight fixtures.
+- A client call served only by a subtree (`/dir/`, `{rest...}`) catch-all is reported as
+  `CATCH-ALL` ("matched by catch-all", `summary.catchAll`, `kind: "catch-all"`), never as
+  mapped, and its fields are not checked. A subtree over a wrapper around a mux is a mount,
+  not a catch-all route.
+- Add `server.exclude` (default `examples`, `testdata`, `tools`) so example, tool and test
+  mains under a server root stop registering routes; both Go adapters honor it.
+- A `const` object passed to a `new` expression now resolves as computed, like a call argument.
+- Add the `tessera version` subcommand and `tessera version --json`
+  (`{"schema_version":"tessera.version.v1","version":"v<version>"}`); `-v`/`--version` unchanged.
+- Expand the adversarial suite to twenty-nine fixtures.
 
 ## 0.1.1 — 2026-11-04
 

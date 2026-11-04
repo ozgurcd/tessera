@@ -81,11 +81,12 @@ const SUBTREE_SUFFIX = "/:param";
 
 /**
  * The read that serves a send: an exact route (method-specific before method-less), else the longest
- * subtree route that is a segment-boundary prefix of the send's route.
+ * subtree route that is a segment-boundary prefix of the send's route. A subtree pairing is a catch-all
+ * match: the registered handler dispatches by itself, so no specific route is known to serve the send.
  */
-function findRead(readMap: Map<string, ReadSet>, subtrees: Array<{ read: ReadSet; base: string }>, send: SendSet): ReadSet | undefined {
+function findRead(readMap: Map<string, ReadSet>, subtrees: Array<{ read: ReadSet; base: string }>, send: SendSet): { read: ReadSet; catchAll: boolean } | undefined {
   const exact = readMap.get(key(send.method, send.route)) ?? readMap.get(key(ANY_METHOD, send.route));
-  if (exact) return exact;
+  if (exact) return { read: exact, catchAll: false };
   let best: { read: ReadSet; base: string } | undefined;
   for (const candidate of subtrees) {
     if (candidate.read.method !== ANY_METHOD && candidate.read.method.toUpperCase() !== send.method.toUpperCase()) continue;
@@ -93,7 +94,7 @@ function findRead(readMap: Map<string, ReadSet>, subtrees: Array<{ read: ReadSet
     const better = !best || candidate.base.length > best.base.length || (candidate.base.length === best.base.length && best.read.method === ANY_METHOD && candidate.read.method !== ANY_METHOD);
     if (better) best = candidate;
   }
-  return best?.read;
+  return best && { read: best.read, catchAll: true };
 }
 
 function deduplicate(findings: Finding[]): Finding[] {
@@ -121,10 +122,16 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     for (const message of send.unresolved) findings.push({ kind: "unresolved", message, site: send.site });
     if (send.route === "<unresolved>") continue;
     // A method-less net/http pattern serves every method; a method-specific one takes precedence.
-    const read = findRead(readMap, subtrees, send);
-    if (read) matched.add(read);
-    if (!read) {
+    const found = findRead(readMap, subtrees, send);
+    if (!found) {
       findings.push({ kind: "unmapped", method: send.method, route: send.route, site: send.site, error: rules.unmapped === "error" });
+      continue;
+    }
+    const { read } = found;
+    matched.add(read);
+    if (found.catchAll) {
+      // Reported on its own and never as mapped; the catch-all's fields say nothing about this route.
+      findings.push({ kind: "catch-all", method: send.method, route: send.route, site: send.site, via: { method: read.method, route: read.route, site: readSites(read)[0]! } });
       continue;
     }
     for (const location of ["query", "body"] as const) {
@@ -177,6 +184,7 @@ export function match(sends: SendSet[], reads: ReadSet[], rules: RulesConfig, al
     unmatched: unique.filter((finding) => finding.kind === "unmatched").length,
     unresolved: unique.filter((finding) => finding.kind === "unresolved").length,
     unmapped: unique.filter((finding) => finding.kind === "unmapped").length,
+    catchAll: unique.filter((finding) => finding.kind === "catch-all").length,
   };
   const hasErrorFinding = summary.unmatched > 0 || unique.some((finding) => finding.kind === "unmapped" && finding.error);
   const hasUnresolvedError = summary.unresolved > 0 && rules.unresolved === "error";

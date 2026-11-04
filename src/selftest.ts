@@ -39,6 +39,7 @@ const CASES: readonly SelftestCase[] = [
   { directory: "26-extra-servers", exitCode: 1, includes: ["1 unmatched, 0 unresolved, 1 unmapped", "GET /ag/api/v1/plan  query field 'ghost'", "UNMAPPED   GET /api/v1/plan"], excludes: ["UNMAPPED   GET /api/v1/things", "UNMAPPED   GET /ag/api/v1/plan", "field 'limit'"] },
   { directory: "27-const-mutation", exitCode: 0, includes: ["0 unmatched, 2 unresolved, 0 unmapped", "client.ts:9  URL route is a computed value", "client.ts:10  URL route is a computed value"], excludes: ["UNMAPPED", "client.ts:11"] },
   { directory: "28-subtree-stripprefix", exitCode: 0, includes: ["0 unmatched, 0 unresolved, 1 unmapped", "UNMAPPED   GET /api/v1/ghost"], excludes: ["UNMAPPED   GET /files", "UNMAPPED   GET /api/v1/items", "UNMAPPED   GET /api/v1/status"] },
+  { directory: "29-catch-all-hiding", exitCode: 0, includes: ["0 unmatched, 0 unresolved, 2 unmapped, 1 matched by catch-all", "UNMAPPED   GET /api/v1/clients", "UNMAPPED   GET /api/v1/org-link/plan", "CATCH-ALL  GET /files/docs/report.pdf", "matched by catch-all * /files/:param at cmd/idp/main.go:5"], excludes: ["UNMAPPED   GET /files", "UNMAPPED   GET /api/v1/real", "UNMAPPED   GET /api/v1/org-link/detail", "/api/:param", "with-monitoring"] },
 ];
 
 export async function runSelftest(): Promise<SelftestResult> {

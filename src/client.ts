@@ -149,10 +149,10 @@ function fileMutations(file: ts.SourceFile, checker: Checker): FileMutations {
       const target = ts.isPropertyAccessExpression(node) ? node.name : node.argumentExpression;
       const symbol = target && checker.getSymbolAtLocation(target);
       if (symbol) result.members.add(symbol);
-    } else if (ts.isCallExpression(node)) {
+    } else if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
       const callee = calleeText(node.expression);
-      // Object.assign mutates only its target; its sources are read.
-      const arguments_ = callee === "Object.assign" ? node.arguments.slice(0, 1) : callee && READ_ONLY_CALLS.has(callee) ? [] : node.arguments;
+      // Object.assign mutates only its target; its sources are read. A constructor can mutate its arguments like any call.
+      const arguments_ = callee === "Object.assign" ? (node.arguments ?? []).slice(0, 1) : callee && READ_ONLY_CALLS.has(callee) ? [] : node.arguments ?? [];
       for (const argument of arguments_) {
         const literal = literalOf(argument, checker);
         if (literal) result.literals.add(literalKey(literal));

@@ -62,7 +62,15 @@ export type ServerConfig = {
   prefix?: string;
   /** net/http: how many nested `http.StripPrefix` sub-mux mounts are followed. */
   maxMountDepth?: number;
+  /**
+   * Directories under `root` that are not part of the server: a bare name matches at any depth, a path with a
+   * slash is relative to `root`. Default `DEFAULT_SERVER_EXCLUDE`; setting it replaces the default.
+   */
+  exclude?: string[];
 };
+
+/** Directories scanned by no server adapter unless `server.exclude` says otherwise: they hold example, tool and test mains, not the server. */
+export const DEFAULT_SERVER_EXCLUDE: readonly string[] = ["examples", "testdata", "tools"];
 
 export type RulesConfig = {
   unmapped: "skip" | "error";
@@ -90,13 +98,15 @@ export type TesseraConfig = {
 export type Finding =
   | { kind: "unmatched"; method: string; route: string; location: FieldLocation; field: string; direction: "sent-not-read" | "read-not-sent"; source: Site; counterpart: Site; sources?: Site[]; counterparts?: Site[] }
   | { kind: "unresolved"; message: string; site: Site }
-  | { kind: "unmapped"; method: string; route: string; site: Site; error: boolean };
+  | { kind: "unmapped"; method: string; route: string; site: Site; error: boolean }
+  /** A client call served by no specific route, only by a registered subtree (`/dir/` or `{rest...}`) catch-all. Its fields are not checked. */
+  | { kind: "catch-all"; method: string; route: string; site: Site; via: { method: string; route: string; site: Site } };
 
 export type CheckResult = {
   schemaVersion: 1;
   sends: SendSet[];
   reads: ReadSet[];
   findings: Finding[];
-  summary: { unmatched: number; unresolved: number; unmapped: number };
+  summary: { unmatched: number; unresolved: number; unmapped: number; catchAll: number };
   exitCode: 0 | 1 | 3;
 };

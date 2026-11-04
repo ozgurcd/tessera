@@ -18,6 +18,7 @@ Usage:
   tessera list                 Print both extracted halves
   tessera explain <route>      Show sent and read fields for a route
   tessera selftest             Run the bundled fixture suite
+  tessera version              Show the installed version (--json for the schema object)
 
 Global flags:
   --config <path>              Configuration file (default: tessera.config.json)
@@ -90,6 +91,10 @@ async function main(): Promise<number> {
   const args = parseArgs(process.argv.slice(2));
   if (args.help || (!args.command && !args.version)) { if (!args.quiet) process.stdout.write(HELP); return 0; }
   if (args.version) { if (!args.quiet) process.stdout.write(`${version()}\n`); return 0; }
+  if (args.command === "version") {
+    if (!args.quiet) process.stdout.write(args.json ? `${JSON.stringify({ schema_version: "tessera.version.v1", version: `v${version()}` })}\n` : `tessera v${version()}\n`);
+    return 0;
+  }
   if (args.command === "init") return initialize(args.config, args.json, args.quiet);
   if (args.command === "selftest") {
     const result = await runSelftest();

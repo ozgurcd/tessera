@@ -53,6 +53,7 @@
             }
           }
         },
+        "exclude": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": ["examples", "testdata", "tools"] },
         "nonReaders": { "type": "array", "items": { "type": "string", "minLength": 1 } },
         "prefix": { "type": "string", "pattern": "^/.*[^/]$" },
         "maxMountDepth": { "type": "integer", "minimum": 1, "default": 8 },

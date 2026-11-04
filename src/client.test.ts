@@ -224,3 +224,19 @@ test("an absolute include matches through a symlinked path in either direction",
     assert.throws(() => extractClient({ tsconfig: "./tsconfig.json", include: [`${link}/nowhere/**/*.ts`] }, directory), /client\.include matched no TypeScript source files/);
   } finally { fs.rmSync(link, { force: true }); fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("a const object passed to a new expression is treated as mutable, like a call argument", () => {
+  const directory = project(`
+    const A = { path: "/a-old" };
+    class Mut { constructor(o: { path: string }) { o.path = "/a-new"; } }
+    new Mut(A);
+    const B = { path: "/b-safe" };
+    void new Date(B.path.length);
+    void fetch(A.path); void fetch(B.path);
+  `);
+  try {
+    const sends = extractClient(CLIENT, directory);
+    assert.deepEqual(sends.map((send) => send.route), ["<unresolved>", "/b-safe"]);
+    assert.ok(sends[0]!.unresolved.some((reason) => reason.includes("computed value")));
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

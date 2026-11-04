@@ -117,3 +117,22 @@ test("an exact read wins over a subtree, and a subtree read counts as paired for
   assert.equal(result.summary.unmatched, 1);
   assert.ok(result.findings.some((finding) => finding.kind === "unresolved" && finding.message === "subtree note"));
 });
+
+test("a subtree-only pairing is reported as matched by catch-all, never as mapped, and its fields are not checked", () => {
+  const catchAll = { ...subtreeRead("*", "/api/:param"), site: { file: "main.go", line: 7 } };
+  const exact: ReadSet = { method: "GET", route: "/api/v1/real", query: [], body: [], unresolved: [], site: { file: "real.go", line: 1 } };
+  const sends = [sendTo("/api/v1/real"), { ...sendTo("/api/v1/clients"), query: ["page"] }];
+  const result = match(sends, [catchAll, exact], RULES, []);
+  assert.deepEqual(result.summary, { unmatched: 0, unresolved: 0, unmapped: 0, catchAll: 1 });
+  const found = result.findings.filter((finding) => finding.kind === "catch-all");
+  assert.equal(found.length, 1);
+  assert.deepEqual(found[0], { kind: "catch-all", method: "GET", route: "/api/v1/clients", site, via: { method: "*", route: "/api/:param", site: { file: "main.go", line: 7 } } });
+  assert.match(findingLine(found[0]!), /^CATCH-ALL {2}GET \/api\/v1\/clients {2}\(matched by catch-all \* \/api\/:param at main\.go:7/);
+  assert.equal(result.exitCode, 0);
+});
+
+test("an exact route gives no catch-all finding even when a subtree also covers it", () => {
+  const exact: ReadSet = { method: "GET", route: "/api/v1/real", query: [], body: [], unresolved: [], site: { file: "real.go", line: 1 } };
+  const result = match([sendTo("/api/v1/real")], [subtreeRead("*", "/api/:param"), exact], RULES, []);
+  assert.equal(result.summary.catchAll, 0);
+});

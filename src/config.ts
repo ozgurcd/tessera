@@ -59,6 +59,9 @@ function validateServer(server: Record<string, unknown>, label: string): void {
   if (server.nonReaders !== undefined && (!Array.isArray(server.nonReaders) || server.nonReaders.some((item) => typeof item !== "string" || !item))) {
     throw new ConfigError(`${label}.nonReaders must be an array of non-empty strings`);
   }
+  if (server.exclude !== undefined && (!Array.isArray(server.exclude) || server.exclude.some((item) => typeof item !== "string" || !item))) {
+    throw new ConfigError(`${label}.exclude must be an array of non-empty strings`);
+  }
   if (server.prefix !== undefined && !validPrefix(server.prefix)) throw new ConfigError(`${label}.prefix must start with '/' and must not end with '/'`);
   if (server.maxMountDepth !== undefined && (!Number.isInteger(server.maxMountDepth) || Number(server.maxMountDepth) < 1)) throw new ConfigError(`${label}.maxMountDepth must be a positive integer`);
   if (server.routeOverrides !== undefined) {

@@ -32,3 +32,25 @@ test("JSON check output is versioned and preserves the exit code", () => {
   assert.equal(parsed.schemaVersion, 1);
   assert.equal(parsed.summary.unmatched, 2);
 });
+
+const packageVersion = (JSON.parse(fs.readFileSync(path.resolve(path.dirname(new URL(import.meta.url).pathname), "../package.json"), "utf8")) as { version: string }).version;
+
+test("version subcommand prints 'tessera v<version>' and --json the versioned schema object, like the other owner tools", () => {
+  const text = spawnSync(process.execPath, [cli, "version"], { encoding: "utf8" });
+  assert.equal(text.status, 0);
+  assert.equal(text.stdout, `tessera v${packageVersion}\n`);
+  const json = spawnSync(process.execPath, [cli, "version", "--json"], { encoding: "utf8" });
+  assert.equal(json.status, 0);
+  assert.equal(json.stdout, `${JSON.stringify({ schema_version: "tessera.version.v1", version: `v${packageVersion}` })}\n`);
+});
+
+test("-v and --version still print the bare version, and --quiet silences version", () => {
+  for (const flag of ["-v", "--version"]) assert.equal(spawnSync(process.execPath, [cli, flag], { encoding: "utf8" }).stdout, `${packageVersion}\n`);
+  const quiet = spawnSync(process.execPath, [cli, "version", "--quiet"], { encoding: "utf8" });
+  assert.equal(quiet.status, 0);
+  assert.equal(quiet.stdout, "");
+});
+
+test("help lists the version subcommand", () => {
+  assert.match(spawnSync(process.execPath, [cli, "--help"], { encoding: "utf8" }).stdout, /tessera version\s+Show the installed version \(--json for the schema object\)/);
+});

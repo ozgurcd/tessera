@@ -172,6 +172,23 @@ function stripPrefixCall(handler: Token[]): { prefix: Token[]; target: Token[] }
 const pathText = (tokens: Token[]): string | undefined =>
   tokens.length && tokens.every((token, index) => (index % 2 === 0 ? token.kind === "identifier" : token.value === ".")) && tokens.length % 2 === 1 ? tokens.map((token) => token.value).join("") : undefined;
 
+/** Registrations of a mux named in `registration`'s handler expression: the same-scope mux in view, else a same-package one. */
+function wrappedMuxTargets(registration: Registration, registrations: Registration[]): Registration[] {
+  const names = new Set<string>();
+  const handler = registration.handler;
+  for (let index = 0; index < handler.length; index += 1) {
+    if (handler[index]!.kind !== "identifier" || handler[index - 1]?.value === ".") continue;
+    let end = index;
+    while (handler[end + 1]?.value === "." && handler[end + 2]?.kind === "identifier") end += 2;
+    names.add(handler.slice(index, end + 1).map((token) => token.value).join(""));
+    index = end;
+  }
+  const directory = path.dirname(registration.file.relative);
+  const targets = registrations.filter((candidate) => candidate !== registration && candidate.receiver !== registration.receiver && names.has(candidate.receiver) && (candidate.file === registration.file || path.dirname(candidate.file.relative) === directory));
+  const local = targets.filter((candidate) => candidate.file === registration.file && candidate.scope === registration.scope);
+  return local.length ? local : targets;
+}
+
 /**
  * Maps net/http registrations (`HandleFunc` and `Handle`) to endpoints. Routes
  * only: handler field reads are not modeled, so every endpoint is marked
@@ -185,7 +202,7 @@ export class GoNetHttpAdapter implements ServerAdapter {
     const config = input as ServerConfig;
     const root = path.resolve(configDirectory, config.root);
     if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) throw new ConfigError(`server root not found: ${config.root}`);
-    const files = walk(root)
+    const files = walk(root, config.exclude)
       .map((absolute) => ({ relative: path.relative(root, absolute).replaceAll(path.sep, "/"), tokens: tokenize(fs.readFileSync(absolute, "utf8")) }))
       .sort((a, b) => a.relative.localeCompare(b.relative));
     const consts = collectConsts(files);
@@ -219,7 +236,18 @@ export class GoNetHttpAdapter implements ServerAdapter {
     const mountDetails: Array<{ registration: Registration; reason: string }> = [];
     for (const registration of registrations) {
       const strip = stripPrefixCall(registration.handler);
-      if (!strip) continue;
+      if (!strip) {
+        // A subtree over a wrapper around a mux (`mux.Handle("/x/", wrap(inner))`) hands the unstripped path to
+        // `inner`, whose full patterns are registered on their own: the subtree is a mount, not a catch-all.
+        const value = evaluate(registration.pattern, path.dirname(registration.file.relative), consts);
+        const parsed = "value" in value ? parsePattern(value.value) : undefined;
+        const wrapped = parsed?.subtree ? wrappedMuxTargets(registration, registrations) : [];
+        if (!wrapped.length) continue;
+        const mount: Mount = { registration, prefix: "", targets: wrapped };
+        mounts.push(mount);
+        for (const target of wrapped) target.mounts.push(mount);
+        continue;
+      }
       const targetPath = pathText(strip.target);
       const targetCall = strip.target.length > 2 && strip.target.at(-1)?.value === ")" && strip.target[1]?.value === "(" ? strip.target[0]!.value : undefined;
       const targets = registrations.filter((candidate) => {

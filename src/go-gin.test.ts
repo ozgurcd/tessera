@@ -87,3 +87,18 @@ test("nonReaders silences context-taking calls that read no query field, by exac
     assert.equal((await messages(["m*"])).length, 3);
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });
+
+test("Gin adapter skips example, tool and testdata directories by default and honors server.exclude", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "tessera-gin-"));
+  try {
+    const route = (name: string) => `package main\nfunc routes(r *gin.Engine) { r.GET("/${name}", h) }\nfunc h(c *gin.Context) {}\n`;
+    for (const [name, text] of [["cmd/main.go", route("real")], ["tools/x/main.go", route("tool")], ["examples/y.go", route("example")], ["testdata/z.go", route("data")]] as const) {
+      fs.mkdirSync(path.dirname(path.join(directory, name)), { recursive: true });
+      fs.writeFileSync(path.join(directory, name), text);
+    }
+    const routes = async (extra: Record<string, unknown> = {}) => (await new GoGinAdapter().extract({ adapter: "go-gin", root: ".", ...extra }, directory)).map((read) => read.route).sort();
+    assert.deepEqual(await routes(), ["/real"]);
+    assert.deepEqual(await routes({ exclude: [] }), ["/data", "/example", "/real", "/tool"]);
+    assert.deepEqual(await routes({ exclude: ["tools"] }), ["/data", "/example", "/real"]);
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});

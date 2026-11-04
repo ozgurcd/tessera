@@ -192,3 +192,56 @@ test("a package-level sub-mux registered in another function is found by receive
   });
   assert.deepEqual(summary(reads), ["GET /api/ping", "GET /elsewhere"]);
 });
+
+const EXAMPLE = `package main
+  func main() {
+    mux := http.NewServeMux()
+    mux.Handle("/api/", mw.Handler(http.HandlerFunc(apiHandler)))
+  }`;
+const REAL = `package main
+  func routes(mux *http.ServeMux) { mux.HandleFunc("GET /api/v1/real", real) }`;
+const ONE_ROUTE = (route: string) => `package main\nfunc r(m *http.ServeMux) { m.HandleFunc("GET ${route}", h) }`;
+
+test("example, tool and testdata mains under the root are not scanned by default, so their catch-all cannot hide unmapped routes", async () => {
+  const reads = await extractFrom({
+    "cmd/idp/main.go": REAL,
+    "tools/license-gen/examples/with-monitoring/main.go": EXAMPLE,
+    "internal/examples/demo.go": EXAMPLE,
+    "testdata/t.go": EXAMPLE,
+  });
+  assert.deepEqual(summary(reads), ["GET /api/v1/real"]);
+});
+
+test("server.exclude replaces the default list: a bare name matches at any depth, a slashed path is relative to the root, a longer name does not match", async () => {
+  const files = { "cmd/idp/main.go": REAL, "tools/a.go": EXAMPLE, "cmd/legacy/main.go": ONE_ROUTE("/legacy"), "mytools/b.go": ONE_ROUTE("/mytools") };
+  assert.deepEqual(summary(await extractFrom(files, { exclude: [] })), ["* /api/:param", "GET /api/v1/real", "GET /legacy", "GET /mytools"]);
+  assert.deepEqual(summary(await extractFrom(files, { exclude: ["cmd/legacy"] })), ["* /api/:param", "GET /api/v1/real", "GET /mytools"]);
+  assert.deepEqual(summary(await extractFrom(files, { exclude: ["tools", "legacy"] })), ["GET /api/v1/real", "GET /mytools"]);
+});
+
+test("a subtree whose handler wraps a dispatching mux is a mount, not a catch-all route", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      orgLink := http.NewServeMux()
+      orgLink.HandleFunc("GET /api/v1/org-link/detail", d)
+      mux.Handle("/api/v1/org-link/", RequireOperator(audit)(orgLink))
+      inner := http.NewServeMux()
+      inner.HandleFunc("GET /admin/license", l)
+      outer := http.NewServeMux()
+      outer.Handle("/admin/", RequireOperator(inner))
+    }` });
+  assert.deepEqual(summary(reads), ["GET /admin/license", "GET /api/v1/org-link/detail"]);
+  assert.ok(reads.every((read) => !read.subtree));
+});
+
+test("a subtree over a wrapped plain handler, or over a mux with no registrations in scope, stays a catch-all route", async () => {
+  const reads = await extractFrom({ "routes.go": `package api
+    func routes(mux *http.ServeMux) {
+      mux.Handle("/a/", RequireOperator(audit)(handler))
+      mux.Handle("/b/", RequireOperator(audit)(elsewhereMux))
+      mux.Handle("/c/", wrap(mux2))
+      other := http.NewServeMux()
+      other.HandleFunc("GET /unrelated", u)
+    }` });
+  assert.deepEqual(reads.filter((read) => read.subtree).map((read) => read.route), ["/a/:param", "/b/:param", "/c/:param"]);
+});

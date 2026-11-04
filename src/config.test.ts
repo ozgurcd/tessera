@@ -111,6 +111,10 @@ test("extraServers are validated like server, and prefix and maxMountDepth have 
     [{ extraServers: [{ adapter: "go-nethttp", root: "./b", maxMountDepth: 0 }] }, /maxMountDepth/],
     [{ extraServers: [{ adapter: "go-nethttp", root: "./b", nonReaders: [""] }] }, /nonReaders/],
     [{ server: { adapter: "go-gin", root: "./a", prefix: "/" } }, /prefix/],
+    [{ server: { adapter: "go-gin", root: "./a", exclude: "tools" } }, /server\.exclude must be an array of non-empty strings/],
+    [{ server: { adapter: "go-gin", root: "./a", exclude: [""] } }, /server\.exclude must be an array of non-empty strings/],
+    [{ server: { adapter: "go-gin", root: "./a", exclude: [1] } }, /server\.exclude must be an array of non-empty strings/],
+    [{ extraServers: [{ adapter: "go-nethttp", root: "./b", exclude: [3] }] }, /extraServers\[0\]\.exclude must be an array of non-empty strings/],
   ];
   for (const [extra, pattern] of cases) {
     const config = configWith(extra);
