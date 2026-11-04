@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 — 2026-11-04
 
 - Add the `go-nethttp` adapter: `HandleFunc`/`Handle` registrations with literal or
   string-constant patterns, Go 1.22 `METHOD /path` patterns and `{wildcard}`
@@ -12,7 +12,6 @@
   from client routes before pairing.
 - Accept absolute `client.include` patterns; an empty match now names the patterns.
 - Expand the adversarial suite to twenty-three fixtures.
-
 - Correct the documented request-analysis boundary for path and response data.
 - Scope allow entries to query or body fields.
 - Deduplicate findings in linear time and retain all endpoint source sites.
