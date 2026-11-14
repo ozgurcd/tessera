@@ -16,6 +16,14 @@ jobs:
         with:
           node-version: 26
           cache: npm
+      - name: Check the tag against package.json
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version $version" >&2
+            exit 1
+          fi
       # Release commits reach main together with their tag, so this is the one
       # test run before publishing. Lifecycle scripts would build and test
       # again (prepare, prepack); npm test builds what npm pack packs.
