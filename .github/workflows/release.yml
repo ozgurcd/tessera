@@ -16,10 +16,13 @@ jobs:
         with:
           node-version: 26
           cache: npm
-      - run: npm ci
+      # Release commits reach main together with their tag, so this is the one
+      # test run before publishing. Lifecycle scripts would build and test
+      # again (prepare, prepack); npm test builds what npm pack packs.
+      - run: npm ci --ignore-scripts
       - run: npm test
       - name: Build npm package
-        run: npm pack
+        run: npm pack --ignore-scripts
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
           generate_release_notes: true
