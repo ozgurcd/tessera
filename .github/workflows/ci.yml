@@ -20,6 +20,10 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: npm
-      - run: npm ci
+      # No dependency has an install script; skipping lifecycle scripts keeps
+      # prepare (build) and prepack (build and test) from repeating npm test.
+      - run: npm ci --ignore-scripts
       - run: npm test
-      - run: npm pack --dry-run
+      # The packed file list does not depend on the Node version.
+      - if: matrix.node-version == 26
+        run: npm pack --dry-run --ignore-scripts
